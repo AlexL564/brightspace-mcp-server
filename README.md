@@ -105,6 +105,8 @@ Run it from your home folder. On macOS, a terminal that lacks Files and Folders 
 
 **MFA at Purdue** commonly uses Microsoft Authenticator number matching (some schools use Duo instead). When a sign-in needs it, the tool call itself returns quickly with the number to enter, rather than sitting silent for up to five minutes — approve it on your phone, then call the tool again; sign-in finishes in the background in the meantime. Google Authenticator and other one-time-code apps work too, with no setting to change: run the auth command above in a terminal and it prompts for the code when your provider asks for one. Pick the visible-browser option during setup only if your identity provider needs interaction the server cannot drive. The MCP also sends authentication progress as logging notifications to clients that display them, useful if you don't see the number in the tool response for some reason.
 
+**On a Duo tenant**, if Duo asks "Is this your device?" before it will send a push, automatic sign-in answers **yes** so the push can go out at all — a headless run has nobody to click it otherwise. That also makes Duo remember the device, which skips its own device check on later logins from this machine. Don't run automatic sign-in on a shared or public computer if you'd rather Duo keep asking. Setting `D2L_DUO_PASSCODE` to any value switches from waiting for a push to typing a code from Duo Mobile's passcode option instead.
+
 ## What You Can Ask About
 
 | Topic | Examples |

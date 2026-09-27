@@ -81,6 +81,8 @@ Concurrent tool calls on a cold session share one sign-in, so firing several too
 
 Access tokens are re-minted from the stored session cookie without a browser. When browser authentication is required, setup's MFA choice controls whether Chromium stays hidden for approval or terminal code entry, or opens for other interaction. Automatic MCP authentication cannot read a code from stdio; tell the user to run the explicit command below, which prompts without echoing the code into MCP logs. Missed approval pauses automatic browser authentication for five minutes. HTTP token renewal remains allowed, and the explicit command bypasses the cooldown. A tool call that triggers browser auth does not block for the whole approval window: it returns within seconds of an MFA challenge appearing, with the number to enter (or, on tenants that never show one, a plain "approve on your phone") in the tool's own error text — relay that text verbatim, tell the user to approve it, and call the tool again once they have; sign-in keeps running in the background in the meantime and the retry picks up its result. Network errors and locked native storage should be reported without retrying MFA.
 
+On a Duo tenant, a device-trust prompt ("Is this your device?") gating the push is answered yes automatically, which also makes Duo skip its device check on later logins from this machine — worth mentioning to a user signing in from a shared computer. `D2L_DUO_PASSCODE` switches from waiting for a push to typing a Duo Mobile passcode.
+
 Visible mode remains open for up to five minutes when automatic credential handling is unavailable or the identity provider needs direct interaction. Rerunning setup preserves the existing hidden or visible preference as the default choice.
 
 ```bash
