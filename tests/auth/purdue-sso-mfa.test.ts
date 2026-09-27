@@ -11,8 +11,13 @@ interface PollState {
   code?: boolean;
   challenge?: boolean;
   kmsi?: boolean;
-  /** Microsoft's federated-domain "Do you trust <domain>?" interstitial. */
-  trust?: boolean;
+  /**
+   * Microsoft's federated-domain "Do you trust <domain>?" interstitial.
+   * `true` names the domain the login is actually signing into (purdue.edu,
+   * matching BASE_URL below); a string names a different domain, to model
+   * the browser being steered to someone else's confirmation.
+   */
+  trust?: boolean | string;
   url?: string;
   cookie?: boolean;
   d2l?: boolean;
@@ -61,6 +66,12 @@ function makeMfaPage(states: PollState[]) {
           : /do you trust/i.test(String(pattern))
             ? Boolean(current().trust)
             : false,
+      textContent: async () => {
+        const trust = current().trust;
+        if (!trust) return null;
+        const domain = trust === true ? "purdue.edu" : trust;
+        return `Do you trust ${domain}?\nWorking anonymously? Continue only if you trust it.`;
+      },
     }) })),
     // Only the controls the MFA loop legitimately looks for are reported
     // visible, so an unmodelled button is never clicked by accident.
@@ -159,6 +170,18 @@ describe("Purdue MFA loop ported from Brightspace Bar", () => {
     ]);
     await handleMFA(page);
     expect(continueClick).toHaveBeenCalledOnce();
+  });
+
+  it("does not click Continue when the trust prompt names a domain other than the configured school", async () => {
+    // The trust dialog is an anti-login-CSRF control: it must never be
+    // confirmed for a tenant/domain other than the one this login is
+    // actually signing into (here, Purdue's own purdue.edu).
+    captureWarnings();
+    const { page, continueClick } = makeMfaPage([
+      { trust: "not-purdue.example", url: "https://login.microsoftonline.com/login.srf" },
+    ]);
+    await expect(handleMFA(page)).rejects.toBeInstanceOf(UnsupportedAuthenticationError);
+    expect(continueClick).not.toHaveBeenCalled();
   });
 
   it("submits an authenticator code without exposing it in logs", async () => {

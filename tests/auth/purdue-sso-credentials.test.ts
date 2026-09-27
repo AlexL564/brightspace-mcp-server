@@ -15,6 +15,14 @@ interface PageOptions {
   detachAfterNext?: boolean;
   /** How many leading Next clicks Microsoft leaves on the email step. */
   nextLandsAfter?: number;
+  /**
+   * Password visibility while the page is still nominally on the email step:
+   * `true` models a genuinely single-page IdP (USC's login.usc.edu) where the
+   * field is co-visible from the start and stays that way; `"flash"` models
+   * Entra transiently exposing a password-shaped decoy for exactly one check
+   * before it disappears and the normal two-step flow continues.
+   */
+  passwordDuringEmail?: boolean | "flash";
 }
 
 /** Render each Entra stage independently, including a delayed password field. */
@@ -22,13 +30,23 @@ function makePage(options: PageOptions = {}) {
   let phase: "email" | "password" | "done" = "email";
   let sinceNext = 0;
   let nextClicks = 0;
+  let passwordDuringEmailChecks = 0;
   const actions: string[] = [];
   const email = {
     isVisible: vi.fn(async () => phase === "email" && options.missing !== "email"),
     fill: vi.fn(async (_value: string) => { actions.push("email"); }),
   };
   const password = {
-    isVisible: vi.fn(async () => phase === "password" && sinceNext >= (options.passwordDelayMs ?? 0) && options.missing !== "password"),
+    isVisible: vi.fn(async () => {
+      if (phase === "email") {
+        if (options.passwordDuringEmail === "flash") {
+          passwordDuringEmailChecks += 1;
+          return passwordDuringEmailChecks === 1;
+        }
+        return Boolean(options.passwordDuringEmail);
+      }
+      return phase === "password" && sinceNext >= (options.passwordDelayMs ?? 0) && options.missing !== "password";
+    }),
     fill: vi.fn(async (_value: string) => { actions.push("password"); }),
   };
   const next = {
@@ -41,7 +59,8 @@ function makePage(options: PageOptions = {}) {
     }),
   };
   const submit = {
-    isVisible: vi.fn(async () => phase === "password" && options.missing !== "submit"),
+    isVisible: vi.fn(async () =>
+      (phase === "password" || options.passwordDuringEmail === true) && options.missing !== "submit"),
     click: vi.fn(async () => { actions.push("submit"); phase = "done"; }),
   };
   const absent = {
@@ -54,7 +73,12 @@ function makePage(options: PageOptions = {}) {
       first: () => {
         if (selector === (options.emailSelector ?? "input[type=email]")) return email;
         if (selector === (options.passwordSelector ?? "input[type=password]")) return password;
-        if (selector === (options.submitSelector ?? "#idSIButton9")) return phase === "email" ? next : submit;
+        if (selector === (options.submitSelector ?? "#idSIButton9")) {
+          // A genuinely single-page form (passwordDuringEmail: true) submits
+          // once, straight from the email phase, with no separate Next click.
+          const isFinalSubmit = phase === "password" || options.passwordDuringEmail === true;
+          return isFinalSubmit ? submit : next;
+        }
         return absent;
       },
     })),
@@ -92,6 +116,29 @@ describe("PurdueSSOFlow credential choreography ported from Brightspace Bar", ()
     expect(form.password.fill).toHaveBeenCalledOnce();
   });
 
+  it("does not take the single-page branch on a transient decoy password field", async () => {
+    // Entra can flash a password-shaped control for a single instant while
+    // its email view is still initializing. Trusting that one observation
+    // would fill the decoy and click Next, never reaching Entra's real
+    // password page. The decoy must vanish on the second check, and the
+    // normal two-step choreography (Next, then the real field) must continue.
+    const form = makePage({ passwordDuringEmail: "flash" });
+    await enterCredentials(new PurdueSSOFlow({ username: USERNAME, password: PASSWORD }), form.page);
+    expect(form.actions).toEqual(["email", "next", "password", "submit"]);
+    expect(form.password.fill).toHaveBeenCalledOnce();
+    expect(form.password.fill).toHaveBeenCalledWith(PASSWORD);
+  });
+
+  it("still handles a genuinely co-visible password field in one pass (single-page IdP)", async () => {
+    // USC's login.usc.edu renders username and password on the same page; the
+    // field survives two consecutive checks, so this must fill both and
+    // submit once instead of clicking Next first.
+    const form = makePage({ passwordDuringEmail: true });
+    await enterCredentials(new PurdueSSOFlow({ username: USERNAME, password: PASSWORD }), form.page);
+    expect(form.actions).toEqual(["email", "password", "submit"]);
+    expect(form.next.click).not.toHaveBeenCalled();
+  });
+
   it("can submit only the public account name before deciding whether a password is needed", async () => {
     const form = makePage({ passwordDelayMs: 500 });
     const flow = new PurdueSSOFlow({ username: "student", password: PASSWORD, baseUrl: PURDUE });
@@ -102,6 +149,18 @@ describe("PurdueSSOFlow credential choreography ported from Brightspace Bar", ()
 
     await enterCredentials(flow, form.page);
     expect(form.actions).toEqual(["email", "next", "password", "submit"]);
+  });
+
+  it("identifyAccount also fills a genuinely co-visible password in one pass instead of submitting it empty", async () => {
+    // Reached via awaitSilentSSO's silent-SSO path: identifyAccount used to
+    // click submit right after the username with no check for a co-visible
+    // password field, which would post an empty password on a single-page
+    // IdP and burn the attempt.
+    const form = makePage({ passwordDuringEmail: true });
+    const flow = new PurdueSSOFlow({ username: USERNAME, password: PASSWORD });
+    await expect(flow.identifyAccount(form.page as never)).resolves.toBe(true);
+    expect(form.actions).toEqual(["email", "password", "submit"]);
+    expect(form.password.fill).toHaveBeenCalledWith(PASSWORD);
   });
 
   // clickWhenReady swallows a click error on purpose, because Entra usually

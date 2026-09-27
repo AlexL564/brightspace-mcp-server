@@ -25,7 +25,11 @@ const SILENT_SSO_POLL_MS = 1000;
 const INITIAL_NAVIGATION_TIMEOUT_MS = 60000;
 const VISIBLE_LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
 const SILENT_SSO = {
-  emailFields: ["input[type=email]", "input[name=loginfmt]"],
+  // Kept in sync with purdue-sso.ts's EMAIL_SELECTORS: awaitSilentSSO gates on
+  // this list before ever calling into that file, so a two-step Shibboleth/CAS
+  // IdP whose username field only matches j_username or #signinid would never
+  // get past this gate otherwise.
+  emailFields: ["input[type=email]", "input[name=loginfmt]", "input[name=j_username]", "input#signinid"],
   credentialFields: ['input#username', 'input#userName', 'input[type="password"]'],
   mfaChallenges: ["#idRichContext_DisplaySign", "#idDiv_SAOTCAS_Title", "#idDiv_SAOTCC_Title"],
   campusSaml: 'a[href*="/d2l/lp/auth/saml/initiate-login"]',

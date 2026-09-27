@@ -87,6 +87,13 @@ export class PurdueSSOFlow {
     if (!this.config.username) return false;
     const email = signInName(this.config.username, this.config.baseUrl);
     if (!await this.fillWhenReady(page, EMAIL_SELECTORS, email)) return false;
+    // Reached via awaitSilentSSO, a single-page IdP (see enterCredentials)
+    // renders its password field next to the username too. Clicking submit
+    // without filling it first would post an empty password and burn the
+    // attempt, so detect and handle it here the same way.
+    if (this.config.password && await this.hasCoVisiblePassword(page)) {
+      if (!await this.fillWhenReady(page, PASSWORD_SELECTORS, this.config.password)) return false;
+    }
     if (!await this.clickWhenReady(page, SUBMIT_SELECTORS)) return false;
     this.accountHintSubmitted = true;
     return true;
@@ -166,8 +173,12 @@ export class PurdueSSOFlow {
       // A single-page identity provider (Shibboleth portals such as USC's
       // login.usc.edu) renders the password field next to the username. Clicking
       // submit between the two would post an empty password and spend the
-      // attempt, so fill both and click once.
-      if (await this.anyVisible(page, PASSWORD_SELECTORS)) {
+      // attempt, so fill both and click once. Entra can also flash a
+      // password-shaped decoy for a single instant while its email view is
+      // still initializing (see awaitSilentSSO's passwordPromptPolls in
+      // browser-auth.ts), so this only takes the single-page branch once the
+      // field survives two consecutive checks.
+      if (await this.hasCoVisiblePassword(page)) {
         if (!await this.fillWhenReady(page, PASSWORD_SELECTORS, this.config.password)) {
           throw new UnsupportedAuthenticationError("The identity provider's password field did not appear. Automatic sign-in cannot continue.");
         }
@@ -219,6 +230,22 @@ export class PurdueSSOFlow {
       if (await page.locator(selector).first().isVisible().catch(() => false)) return true;
     }
     return false;
+  }
+
+  /**
+   * True only when the password field is visible on two consecutive checks.
+   * Entra can transiently show a password-shaped control for a single
+   * instant while its email view is still initializing (documented next to
+   * awaitSilentSSO's `passwordPromptPolls` in browser-auth.ts); trusting one
+   * instantaneous observation can fill that decoy and click Next, leaving
+   * Entra's real password page never filled. A genuinely single-page IdP
+   * (Shibboleth portals such as USC's login.usc.edu) keeps the field on
+   * screen, so it survives the second check.
+   */
+  private async hasCoVisiblePassword(page: Page): Promise<boolean> {
+    if (!await this.anyVisible(page, PASSWORD_SELECTORS)) return false;
+    await page.waitForTimeout(FIELD_POLL_MS);
+    return await this.anyVisible(page, PASSWORD_SELECTORS);
   }
 
   private async hasPostCredentialChallenge(page: Page): Promise<boolean> {
@@ -350,18 +377,54 @@ export class PurdueSSOFlow {
   /**
    * Microsoft asks users of a federated domain to confirm they trust it ("Do
    * you trust usc.edu?") before issuing the SAML assertion to Brightspace.
-   * Nothing proceeds until Continue is clicked, and a headless run has nobody to
-   * click it, so the flow parks on this page until the MFA deadline and the
-   * session is never established. Guarded on the heading so an unrelated
-   * Continue button elsewhere on Microsoft's pages is never hit.
+   * Nothing proceeds until Continue is clicked, and a headless run has nobody
+   * to click it, so the flow parks on this page until the MFA deadline and
+   * the session is never established. This dialog is an anti-login-CSRF
+   * control, not a nuisance interstitial, so it is not enough to notice the
+   * text is present somewhere on the page (`page.getByText()` is a whole-page
+   * substring search, not a heading-scoped match) — the domain named in the
+   * prompt is parsed out and compared against the domain this login is
+   * actually signing into. A mismatch (e.g. the browser was steered to a
+   * different tenant's confirmation) is left unclicked; the existing 5-minute
+   * MFA timeout is the safe failure mode for that, same as any other
+   * unhandled prompt.
    */
   private async clickTrustPrompt(page: Page): Promise<void> {
     if (new URL(page.url()).hostname !== "login.microsoftonline.com") return;
-    if (!await page.getByText(/Do you trust/i).first().isVisible().catch(() => false)) return;
+    const prompt = page.getByText(/Do you trust/i).first();
+    if (!await prompt.isVisible().catch(() => false)) return;
+    const text = await prompt.textContent().catch(() => null);
+    const promptDomain = text ? this.extractTrustDomain(text) : null;
+    const expectedDomain = this.expectedTrustDomain();
+    if (!promptDomain || !expectedDomain || promptDomain !== expectedDomain) {
+      log("WARN", `Domain-trust prompt named "${promptDomain ?? "an unknown domain"}", which does not match the configured sign-in domain; not confirming trust automatically.`);
+      return;
+    }
     const cont = page.getByRole("button", { name: /continue/i }).first();
     if (!await cont.isVisible().catch(() => false)) return;
     await cont.click().catch(() => {});
-    log("INFO", "Clicked Continue on Microsoft's domain-trust prompt.");
+    log("INFO", `Clicked Continue on Microsoft's domain-trust prompt for ${promptDomain}.`);
+  }
+
+  /** Pulls the domain Microsoft named out of "Do you trust <domain>?" text. */
+  private extractTrustDomain(text: string): string | null {
+    const match = text.match(/do you trust\s+([a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+)/i);
+    return match ? match[1].toLowerCase() : null;
+  }
+
+  /** The domain this login is actually signing into, to check the trust prompt against. */
+  private expectedTrustDomain(): string | null {
+    if (this.config.username) {
+      const email = signInName(this.config.username, this.config.baseUrl);
+      const at = email.lastIndexOf("@");
+      if (at !== -1) return email.slice(at + 1).toLowerCase();
+    }
+    // Purdue's own tenant is federated to purdue.edu regardless of what the
+    // configured username looks like.
+    if (this.config.baseUrl && new URL(this.config.baseUrl).hostname.toLowerCase() === "purdue.brightspace.com") {
+      return "purdue.edu";
+    }
+    return null;
   }
 
   /** The digits on screen, or null when Entra is not showing any. */
