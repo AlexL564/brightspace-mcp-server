@@ -126,6 +126,20 @@ describe("explicit takeover of a live automatic owner", () => {
     await release();
   });
 
+  it("still takes over when the automatic owner exits between the liveness check and the signal", async () => {
+    await writeOwner("auto-owner-gone", 424245, "automatic");
+    // process.kill on a PID that just exited throws ESRCH. That is not a
+    // failure of the takeover -- the lock is about to be free -- so the
+    // explicit run must proceed rather than surface an unexpected error.
+    vi.spyOn(lockOps, "isDead").mockReturnValueOnce(false).mockReturnValue(true);
+    vi.spyOn(lockOps, "kill").mockImplementation(() => {
+      throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH" });
+    });
+
+    const release = await acquireProcessLock(lockPath, { mode: "explicit" });
+    await release();
+  });
+
   it("never takes over a live explicit owner", async () => {
     await writeOwner("explicit-owner", 424243, "explicit");
     vi.spyOn(lockOps, "isDead").mockReturnValue(false);

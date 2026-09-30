@@ -154,7 +154,13 @@ const TAKEOVER_POLL_MS = 100;
  * once TAKEOVER_WAIT_MS has passed without either happening.
  */
 async function waitForTakeover(lockPath: string, stale: Owner): Promise<void> {
-  lockOps.kill(stale.pid, "SIGTERM");
+  try {
+    lockOps.kill(stale.pid, "SIGTERM");
+  } catch (error) {
+    // The owner exited between the liveness check and the signal. That is the
+    // outcome a takeover wants; the wait below sees the dead PID and returns.
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
   const deadline = Date.now() + TAKEOVER_WAIT_MS;
   while (Date.now() < deadline) {
     if (lockOps.isDead(stale)) return;
