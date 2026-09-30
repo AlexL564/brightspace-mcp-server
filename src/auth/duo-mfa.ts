@@ -42,7 +42,7 @@ const PASSCODE_INPUT_SELECTORS = ["#passcode-input", 'input[name="passcode"]'];
 interface DuoMfaOptions {
   headless?: boolean;
   requestMfaCode?: RequestMfaCode;
-  /** See PurdueSSOConfig.onMfaChallenge — same one-shot-plus-late-number contract. */
+  /** See PurdueSSOConfig.onMfaChallenge in purdue-sso.ts — same re-announce-on-change contract. */
   onMfaChallenge?: (number: string | null) => void;
 }
 
@@ -75,6 +75,8 @@ export class DuoMfaHandler {
   private passcodeChoiceClicked = false;
   /** True once onMfaChallenge has been told about this login, code or not. */
   private announcedToCaller = false;
+  /** The last code actually handed to onMfaChallenge. See purdue-sso.ts's lastAnnouncedNumber for why this is tracked separately from verificationCodeAnnounced. */
+  private lastAnnouncedCode: string | null = null;
 
   constructor(private readonly options: DuoMfaOptions) {}
 
@@ -163,14 +165,16 @@ export class DuoMfaHandler {
       this.approvalAnnounced = true;
       log("WARN", "Waiting up to 5 minutes for Duo MFA approval on your device.");
       this.options.onMfaChallenge?.(verificationCode);
-      if (verificationCode) this.announcedToCaller = true;
+      this.announcedToCaller = true;
+      this.lastAnnouncedCode = verificationCode;
     }
 
     if (verificationCode && verificationCode !== this.verificationCodeAnnounced) {
       this.verificationCodeAnnounced = verificationCode;
       log("WARN", `Duo verification code: ${verificationCode}. Enter it in Duo Mobile.`);
-      if (!this.announcedToCaller) {
+      if (!this.announcedToCaller || verificationCode !== this.lastAnnouncedCode) {
         this.announcedToCaller = true;
+        this.lastAnnouncedCode = verificationCode;
         this.options.onMfaChallenge?.(verificationCode);
       }
     }

@@ -194,6 +194,27 @@ describe("AuthRunner", () => {
     expect(child.kill).not.toHaveBeenCalled();
   });
 
+  it("re-answers a joiner with a changed number after a later MFA_NUMBER marker", async () => {
+    // Fix for the 2026-09-30 incident: once the child's own MFA loop
+    // re-announces a changed number (purdue-sso.ts's Fix 1) by printing a
+    // fresh MFA_NUMBER marker, a later join must surface that new number
+    // instead of the stale one from the early answer.
+    const runner = new AuthRunner();
+    const first = runner.run();
+    const firstFailure = expect(first).rejects.toMatchObject({ kind: "mfaPending", numberMatch: "42" });
+    child.stdout.write("MFA_NUMBER:42\n");
+    await firstFailure;
+
+    child.stdout.write("MFA_NUMBER:73\n");
+
+    const second = runner.run();
+    const secondFailure = expect(second).rejects.toMatchObject({ kind: "mfaPending", numberMatch: "73" });
+    await vi.advanceTimersByTimeAsync(5000);
+    await secondFailure;
+
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
   it("resolves a joiner early when the background child closes within the grace window", async () => {
     const runner = new AuthRunner();
     const first = runner.run();

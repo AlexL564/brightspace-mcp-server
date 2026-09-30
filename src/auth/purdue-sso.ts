@@ -36,6 +36,55 @@ const NUMBER_MATCH_POLL_MS = 2000;
 /** A person has to find their phone, unlock it, and read a prompt. */
 const MFA_TIMEOUT_MS = 5 * 60 * 1000;
 
+/**
+ * Entra's number-match request itself expires (typically ~1-2 minutes) well
+ * before the 5-minute MFA_TIMEOUT_MS this flow allows overall, or the user
+ * can tap Deny. Either way Entra stops showing the number and offers a way to
+ * send another request; without asking for one this flow just polls a dead
+ * request until MFA_TIMEOUT_MS. Bounded so a tenant that never clears this
+ * screen still hits the ordinary timeout instead of resending forever.
+ */
+const MAX_RESENDS = 2;
+
+/**
+ * EXPECTED, not verified against a live tenant from here: Entra's "Send
+ * another request" control on the number-match timeout/denied view.
+ * Matched by id first because it is far more specific than the text fallback
+ * below. Entra's own title ids for this view — `#idDiv_SAASTO_Title` for a
+ * timeout, `#idDiv_SAASDS_Title` for a denial — are not matched directly
+ * since this id is the more stable target, but are left here as a breadcrumb
+ * for whoever next has a live tenant to confirm these against.
+ */
+const RESEND_ID_SELECTOR = "#idA_SAASTO_Resend";
+
+/**
+ * EXPECTED, not observed: a fallback for when Entra renames the id above.
+ * Any visible control whose text reads as a resend action, scoped to the
+ * sign-in surface (never the whole document, which can contain unrelated
+ * matches).
+ */
+const RESEND_TEXT_PATTERN = /send another request|resend notification|try again|send again/i;
+
+/**
+ * Never click a control offering to switch verification methods — that
+ * abandons number-match for something this headless flow cannot complete.
+ */
+const RESEND_SWITCH_METHOD_PATTERN = /can.t use|sign in another way|different verification|other ways/i;
+
+/** Where the text-based resend fallback is allowed to look. */
+const RESEND_SCOPE_SELECTORS = ["#lightbox", "form"];
+
+/** Log once, not on every poll, when no resend control turns up after a number vanishes. */
+const RESEND_NOT_FOUND_WARN_MS = 30_000;
+
+/**
+ * Don't click the resend control again on the immediately following poll —
+ * give Entra a full cycle to re-render before looking again. Two poll
+ * intervals rather than one so ordinary per-poll overhead can never make the
+ * elapsed time creep past a single interval and defeat the guard.
+ */
+const RESEND_CLICK_GUARD_MS = NUMBER_MATCH_POLL_MS * 2;
+
 interface PurdueSSOConfig {
   username?: string;
   password?: string;
@@ -43,12 +92,15 @@ interface PurdueSSOConfig {
   headless?: boolean;
   requestMfaCode?: RequestMfaCode;
   /**
-   * Fired once per login as soon as an MFA challenge is visible: with the
-   * number-match digits when one is already on screen, otherwise null. If a
-   * number later appears after a null firing, this fires once more with it —
-   * that is the only case it fires twice. Lets a caller (AuthRunner) answer
-   * the user immediately instead of blocking for the whole 5-minute approval
-   * wait, even on tenants that never show a number.
+   * Fired as soon as an MFA challenge is visible: with the number-match
+   * digits when one is already on screen, otherwise null. Fired again, with
+   * the new digits, every time a DIFFERENT number replaces the one last
+   * announced — including after Entra's number-match request expires or is
+   * denied and this flow asks it to send another one (see MAX_RESENDS below).
+   * Lets a caller (AuthRunner) answer the user immediately instead of
+   * blocking for the whole 5-minute approval wait, even on tenants that
+   * never show a number, and re-answer if the number it already gave the
+   * user has since gone stale.
    */
   onMfaChallenge?: (number: string | null) => void;
 }
@@ -267,11 +319,26 @@ export class PurdueSSOFlow {
     let announced: string | null = null;
     /** True once onMfaChallenge has been told about this login, number or not. */
     let announcedToCaller = false;
+    /**
+     * The last number actually handed to onMfaChallenge. Distinct from
+     * `announced` (which only dedupes the WARN log): once the caller has been
+     * told about a number, a later DIFFERENT one — including a numberless
+     * announcement's first number — must reach onMfaChallenge again, even
+     * though `announced` already fires the log every time it changes.
+     */
+    let lastAnnouncedNumber: string | null = null;
+    /** True once a number has appeared at least once this login (Fix 2 below only reacts after one has). */
+    let sawNumber = false;
+    let resendCount = 0;
+    let resendLastClickAt: number | null = null;
+    let numberVanishedAt: number | null = null;
+    let resendNotFoundWarned = false;
     try {
       while (Date.now() < deadline) {
         if (await this.duoMfa.handle(page)) challenged = true;
         if (await this.submitMfaCode(page)) challenged = true;
         const number = await this.readNumberMatch(page);
+        if (number) sawNumber = true;
         const challengeVisible = number !== null ||
           await page.locator("#idDiv_SAOTCAS_Title").first().isVisible().catch(() => false) ||
           await page.locator("#idDiv_SAOTCC_Title").first().isVisible().catch(() => false);
@@ -279,19 +346,44 @@ export class PurdueSSOFlow {
           challenged = true;
           log("WARN", "Waiting up to 5 minutes for Microsoft MFA approval on your device.");
           this.config.onMfaChallenge?.(number);
-          if (number) announcedToCaller = true;
+          announcedToCaller = true;
+          lastAnnouncedNumber = number;
         }
         if (number && number !== announced) {
           announced = number;
           log("WARN", `Number match: ${number}. Enter it in Microsoft Authenticator.`);
-          if (!announcedToCaller) {
+          if (!announcedToCaller || number !== lastAnnouncedNumber) {
             announcedToCaller = true;
+            lastAnnouncedNumber = number;
             this.config.onMfaChallenge?.(number);
           }
+        }
+        if (number) {
+          numberVanishedAt = null;
+          resendNotFoundWarned = false;
         }
         if (await this.isAuthenticated(page)) {
           log("INFO", "Login successful - verified Brightspace home");
           return;
+        }
+        // Fix 2: Entra's number-match request itself times out (or the user
+        // taps Deny) well before the 5-minute budget above. Once that has
+        // happened, ask Entra for another one instead of polling a dead
+        // request until MFA_TIMEOUT_MS; readNumberMatch on the next poll
+        // picks up the fresh number, and the re-announce logic above tells
+        // the caller about it.
+        if (sawNumber && number === null && new URL(page.url()).hostname === "login.microsoftonline.com") {
+          if (numberVanishedAt === null) numberVanishedAt = Date.now();
+          resendNotFoundWarned = await this.tryResendNumberMatch(page, {
+            resendCount,
+            resendLastClickAt,
+            numberVanishedAt,
+            resendNotFoundWarned,
+            onResend: (clickedAt) => {
+              resendCount += 1;
+              resendLastClickAt = clickedAt;
+            },
+          });
         }
         await this.clickProvenKmsi(page);
         // The federated-domain trust prompt arrives after the IdP succeeds, so
@@ -306,6 +398,60 @@ export class PurdueSSOFlow {
     }
     if (challenged) throw new MfaApprovalError(undefined, announced ?? undefined);
     throw new UnsupportedAuthenticationError("Sign-in did not reach a supported MFA challenge or Brightspace within 5 minutes.");
+  }
+
+  /**
+   * Look for Entra's "send another request" affordance and click it, at most
+   * MAX_RESENDS times per login and never twice in immediate succession.
+   * Returns the (possibly updated) resendNotFoundWarned flag for the caller
+   * to carry into the next poll.
+   */
+  private async tryResendNumberMatch(
+    page: Page,
+    state: {
+      resendCount: number;
+      resendLastClickAt: number | null;
+      numberVanishedAt: number;
+      resendNotFoundWarned: boolean;
+      onResend: (clickedAt: number) => void;
+    },
+  ): Promise<boolean> {
+    if (state.resendCount >= MAX_RESENDS) return state.resendNotFoundWarned;
+    if (state.resendLastClickAt !== null && Date.now() - state.resendLastClickAt < RESEND_CLICK_GUARD_MS) {
+      return state.resendNotFoundWarned;
+    }
+    const control = await this.findResendControl(page);
+    if (!control) {
+      if (!state.resendNotFoundWarned && Date.now() - state.numberVanishedAt >= RESEND_NOT_FOUND_WARN_MS) {
+        log("WARN", "Number-match request appears to have expired or been denied, but no \"send another request\" control was found; continuing to wait.");
+        return true;
+      }
+      return state.resendNotFoundWarned;
+    }
+    const clickedAt = Date.now();
+    state.onResend(clickedAt);
+    log("WARN", `Number-match request expired; sent another request (${state.resendCount + 1} of ${MAX_RESENDS}).`);
+    await control.click().catch(() => {});
+    return state.resendNotFoundWarned;
+  }
+
+  /** Entra's resend control, matched by id first, then by a scoped text fallback. See the selector constants' own comments. */
+  private async findResendControl(page: Page): Promise<Locator | null> {
+    const byId = page.locator(RESEND_ID_SELECTOR).first();
+    if (await byId.isVisible().catch(() => false)) return byId;
+
+    for (const scopeSelector of RESEND_SCOPE_SELECTORS) {
+      const scope = page.locator(scopeSelector).first();
+      if (!await scope.isVisible().catch(() => false)) continue;
+      const candidates = await scope.getByText(RESEND_TEXT_PATTERN).all().catch(() => []);
+      for (const candidate of candidates) {
+        if (!await candidate.isVisible().catch(() => false)) continue;
+        const text = (await candidate.textContent().catch(() => null)) ?? "";
+        if (RESEND_SWITCH_METHOD_PATTERN.test(text)) continue;
+        return candidate;
+      }
+    }
+    return null;
   }
 
   private async submitMfaCode(page: Page): Promise<boolean> {

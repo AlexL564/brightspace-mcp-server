@@ -21,7 +21,16 @@ interface PollState {
   url?: string;
   cookie?: boolean;
   d2l?: boolean;
+  /**
+   * Entra's number-match timeout/denied view offering "Send another
+   * request" (`#idA_SAASTO_Resend` in purdue-sso.ts). A state with `number`
+   * absent and `resend: true` models the number having expired or been
+   * denied while the resend control is on screen.
+   */
+  resend?: boolean;
 }
+
+const RESEND_ID_SELECTOR = "#idA_SAASTO_Resend";
 
 function captureWarnings() {
   const lines: string[] = [];
@@ -39,6 +48,7 @@ function makeMfaPage(states: PollState[]) {
   const fill = vi.fn(async () => {});
   const press = vi.fn(async () => {});
   const continueClick = vi.fn(async () => {});
+  const resendClick = vi.fn(async () => {});
   const current = () => states[Math.min(poll, states.length - 1)] ?? {};
   const locatorTarget = (selector: string) => ({
     isVisible: async () => {
@@ -47,10 +57,11 @@ function makeMfaPage(states: PollState[]) {
       if (selector === "#idSubmit_SAOTCC_Continue") return Boolean(current().code);
       if (selector === "#idDiv_SAOTCAS_Title" || selector === "#idDiv_SAOTCC_Title") return Boolean(current().challenge || current().code);
       if (selector === "#KmsiCheckboxField" || selector === "#idSIButton9") return Boolean(current().kmsi);
+      if (selector === RESEND_ID_SELECTOR) return Boolean(current().resend);
       return false;
     },
     textContent: async () => selector === SIGN_SELECTOR ? current().number ?? null : null,
-    click: yes,
+    click: selector === RESEND_ID_SELECTOR ? resendClick : yes,
     fill,
     press,
   });
@@ -89,7 +100,7 @@ function makeMfaPage(states: PollState[]) {
       vi.advanceTimersByTime(milliseconds);
     }),
   };
-  return { page, yes, fill, press, continueClick, poll: () => poll };
+  return { page, yes, fill, press, continueClick, resendClick, poll: () => poll };
 }
 
 describe("Purdue MFA loop ported from Brightspace Bar", () => {
@@ -124,7 +135,10 @@ describe("Purdue MFA loop ported from Brightspace Bar", () => {
     expect(numbers[1]).toContain("Number match: 73.");
   });
 
-  it("reports onMfaChallenge once when a number is already visible on the first poll", async () => {
+  it("reports onMfaChallenge for the first number, then again when Entra swaps in a different one", async () => {
+    // Fix for the 2026-09-30 incident: a stale number in a tool response used
+    // to survive for the rest of the login. onMfaChallenge must fire again
+    // any time the number actually on screen changes, not just once per login.
     const onMfaChallenge = vi.fn();
     const { page } = makeMfaPage([
       { number: "42", challenge: true },
@@ -133,8 +147,9 @@ describe("Purdue MFA loop ported from Brightspace Bar", () => {
       { url: `${BASE_URL}/d2l/home`, cookie: true, d2l: true },
     ]);
     await handleMFA(page, undefined, onMfaChallenge);
-    expect(onMfaChallenge).toHaveBeenCalledTimes(1);
-    expect(onMfaChallenge).toHaveBeenCalledWith("42");
+    expect(onMfaChallenge).toHaveBeenCalledTimes(2);
+    expect(onMfaChallenge).toHaveBeenNthCalledWith(1, "42");
+    expect(onMfaChallenge).toHaveBeenNthCalledWith(2, "73");
   });
 
   it("reports onMfaChallenge with null first, then once more when a number later appears", async () => {
@@ -149,6 +164,34 @@ describe("Purdue MFA loop ported from Brightspace Bar", () => {
     expect(onMfaChallenge).toHaveBeenCalledTimes(2);
     expect(onMfaChallenge).toHaveBeenNthCalledWith(1, null);
     expect(onMfaChallenge).toHaveBeenNthCalledWith(2, "73");
+  });
+
+  it("resends an expired number-match request and re-announces the new number", async () => {
+    const onMfaChallenge = vi.fn();
+    const { page, resendClick } = makeMfaPage([
+      { number: "42", challenge: true },
+      { resend: true },
+      { number: "73", challenge: true },
+      { url: `${BASE_URL}/d2l/home`, cookie: true, d2l: true },
+    ]);
+    await handleMFA(page, undefined, onMfaChallenge);
+    expect(resendClick).toHaveBeenCalledOnce();
+    expect(onMfaChallenge).toHaveBeenCalledTimes(2);
+    expect(onMfaChallenge).toHaveBeenNthCalledWith(1, "42");
+    expect(onMfaChallenge).toHaveBeenNthCalledWith(2, "73");
+  });
+
+  it("resends at most twice, then falls through to the existing timeout", async () => {
+    captureWarnings();
+    // The number never comes back, so the loop should give up resending
+    // after MAX_RESENDS and let the ordinary 5-minute timeout take over
+    // rather than clicking "Send another request" forever.
+    const { page, resendClick } = makeMfaPage([
+      { number: "42", challenge: true },
+      { resend: true },
+    ]);
+    await expect(handleMFA(page)).rejects.toMatchObject({ numberMatch: "42" });
+    expect(resendClick).toHaveBeenCalledTimes(2);
   });
 
   it("clicks Yes only on a proven stay-signed-in page", async () => {

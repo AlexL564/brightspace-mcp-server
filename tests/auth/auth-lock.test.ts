@@ -1,11 +1,11 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import ts from "typescript";
-import { acquireProcessLock, AuthenticationInProgressError } from "../../src/auth/auth-lock.js";
+import { acquireProcessLock, AuthenticationInProgressError, lockOps } from "../../src/auth/auth-lock.js";
 
 let lockPath: string;
 let moduleUrl: string;
@@ -98,5 +98,49 @@ describe("process-shared authentication lock", () => {
     await fs.mkdir(claimPath);
     await fs.writeFile(path.join(claimPath, "owner.json"), metadata);
     await (await acquireProcessLock(lockPath))();
+  });
+});
+
+describe("explicit takeover of a live automatic owner", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  async function writeOwner(nonce: string, pid: number, mode: "automatic" | "explicit") {
+    await fs.mkdir(lockPath);
+    await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify({ pid, host: "other-host", nonce, mode }));
+  }
+
+  it("SIGTERMs and takes over a live automatic owner for an explicit acquire", async () => {
+    await writeOwner("auto-owner", 424242, "automatic");
+
+    // Fake liveness rather than spawning a real process: kill() flips the
+    // owner "dead" the moment it is called, which is also what a real SIGTERM
+    // does once browser-auth.ts's closeOnSignal unwinds the child's MFA loop
+    // and its `authenticate()` finally releases the lock.
+    let alive = true;
+    const isDead = vi.spyOn(lockOps, "isDead").mockImplementation(() => !alive);
+    const kill = vi.spyOn(lockOps, "kill").mockImplementation(() => { alive = false; });
+
+    const release = await acquireProcessLock(lockPath, { mode: "explicit" });
+    expect(kill).toHaveBeenCalledWith(424242, "SIGTERM");
+    expect(isDead).toHaveBeenCalled();
+    await release();
+  });
+
+  it("never takes over a live explicit owner", async () => {
+    await writeOwner("explicit-owner", 424243, "explicit");
+    vi.spyOn(lockOps, "isDead").mockReturnValue(false);
+    const kill = vi.spyOn(lockOps, "kill");
+
+    await expect(acquireProcessLock(lockPath, { mode: "explicit" })).rejects.toBeInstanceOf(AuthenticationInProgressError);
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it("never lets an automatic acquire take over anything, even a live automatic owner", async () => {
+    await writeOwner("auto-owner-2", 424244, "automatic");
+    vi.spyOn(lockOps, "isDead").mockReturnValue(false);
+    const kill = vi.spyOn(lockOps, "kill");
+
+    await expect(acquireProcessLock(lockPath, { mode: "automatic" })).rejects.toBeInstanceOf(AuthenticationInProgressError);
+    expect(kill).not.toHaveBeenCalled();
   });
 });

@@ -416,7 +416,7 @@ export class AuthRunner {
           finishChild();
         } else {
           const failures: Record<number, [AuthFailureKind, string]> = {
-            2: ["busy", "Authentication already in progress in another process. Complete that attempt, then retry."],
+            2: ["busy", `Authentication already in progress in another process. Complete that attempt, then retry, or run \`${AUTH_COMMAND}\` in a terminal to take over that background attempt.`],
             3: ["cooldown", `Automatic MFA is paused after an unsuccessful attempt. Run ${AUTH_COMMAND} to retry immediately.`],
             4: ["unsupported", "This identity provider cannot complete headless authentication. See the authentication logs."],
             5: ["secureStorage", "The native credential store is unavailable or locked. Unlock it and retry."],

@@ -197,6 +197,22 @@ describe("DuoMfaHandler", () => {
     expect(onMfaChallenge).toHaveBeenCalledWith("1234");
   });
 
+  it("reports onMfaChallenge again when Duo issues a changed verification code", async () => {
+    // Same fix as purdue-sso.ts: a stale code must not survive for the rest
+    // of the login once Duo shows a different one.
+    const onMfaChallenge = vi.fn();
+    const handler = new DuoMfaHandler({ onMfaChallenge });
+
+    const first = makePage({ verificationCode: "111" });
+    await handler.handle(first.page as never);
+    const second = makePage({ verificationCode: "222" });
+    await handler.handle(second.page as never);
+
+    expect(onMfaChallenge).toHaveBeenCalledTimes(2);
+    expect(onMfaChallenge).toHaveBeenNthCalledWith(1, "111");
+    expect(onMfaChallenge).toHaveBeenNthCalledWith(2, "222");
+  });
+
   it("reports onMfaChallenge with null for a plain push, with nothing more to say later", async () => {
     const onMfaChallenge = vi.fn();
     const { page } = makePage({});

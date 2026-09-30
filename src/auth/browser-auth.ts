@@ -54,7 +54,7 @@ export interface AuthenticateOptions {
 
 export interface BrowserAuthOptions {
   requestMfaCode?: RequestMfaCode;
-  /** See PurdueSSOConfig.onMfaChallenge — fired early so a caller can answer without blocking on the full MFA wait. */
+  /** See PurdueSSOConfig.onMfaChallenge — fired early so a caller can answer without blocking on the full MFA wait, and again if the number changes. */
   onMfaChallenge?: OnMfaChallenge;
 }
 
@@ -87,7 +87,10 @@ export class BrowserAuth {
   }
 
   async authenticate(options: AuthenticateOptions = {}): Promise<TokenData> {
-    const release = await acquireProcessLock(path.join(this.config.sessionDir, ".auth.lock"));
+    const release = await acquireProcessLock(
+      path.join(this.config.sessionDir, ".auth.lock"),
+      { mode: options.automatic ? "automatic" : "explicit" },
+    );
     try {
       // Even a cookie-only SAML redirect can issue an MFA push. Suppress all
       // automatic browser attempts during cooldown; HTTP token refresh runs

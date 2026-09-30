@@ -13,7 +13,11 @@ import { BrowserAuthError } from "../utils/errors.js";
 import { AUTH_COMMAND } from "../utils/commands.js";
 
 export type RequestMfaCode = () => Promise<string>;
-/** See PurdueSSOConfig.onMfaChallenge in purdue-sso.ts for the firing contract. */
+/**
+ * See PurdueSSOConfig.onMfaChallenge in purdue-sso.ts for the firing
+ * contract: fires on the first MFA challenge (a number or null), and again
+ * every time a different number replaces the one last announced.
+ */
 export type OnMfaChallenge = (number: string | null) => void;
 
 export class UnsupportedAuthenticationError extends BrowserAuthError {

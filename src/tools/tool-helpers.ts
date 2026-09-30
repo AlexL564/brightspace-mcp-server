@@ -67,7 +67,8 @@ export function errorResponse(message: string): CallToolResult {
  * words in the response. The full error still goes to the log.
  */
 const AUTH_FAILURE_GUIDANCE: Record<AuthFailureKind, string> = {
-  busy: "A sign-in is already running in another process. Let it finish, then try again.",
+  busy: "A sign-in is already running in another process. Let it finish, then try again, " +
+    `or run \`${AUTH_COMMAND}\` in a terminal to take over that background attempt.`,
   cooldown:
     "Automatic sign-in is paused because an MFA prompt went unanswered. " +
     `Run \`${AUTH_COMMAND}\` in a terminal (from your home folder) to retry now and see the number to enter.`,
