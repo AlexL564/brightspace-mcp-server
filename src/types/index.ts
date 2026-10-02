@@ -99,4 +99,11 @@ export interface CourseFilterConfig {
   includeCourseIds?: number[];
   excludeCourseIds?: number[];
   activeOnly: boolean;
+  /**
+   * Only include courses whose Access.StartDate ≤ now ≤ Access.EndDate,
+   * matching Brightspace's "Current Courses" widget. Courses with both
+   * start and end dates null (undated org units like "Academic Integrity")
+   * are excluded; a single null side is treated as open-ended. Default: false.
+   */
+  currentOnly: boolean;
 }

@@ -66,6 +66,13 @@
           "isSecret": false
         },
         {
+          "name": "D2L_CURRENT_ONLY",
+          "description": "Only return courses whose Access.StartDate to Access.EndDate window contains now, matching Brightspace's \"Current Courses\" widget. Default: false",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false
+        },
+        {
           "name": "D2L_NO_UPDATE_CHECK",
           "description": "Set to any value to disable the startup check against the npm registry for a newer version.",
           "isRequired": false,

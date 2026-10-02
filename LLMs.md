@@ -222,7 +222,7 @@ src/
   utils/
     config-store.ts         ~/.brightspace-mcp/config.json reader/writer
     config.ts               Resolved config (store + env fallback)
-    course-filter.ts        Filter enrolled vs archived courses
+    course-filter.ts        Filter enrolled vs archived courses, and (currentOnly) vs out-of-term courses
     download-helpers.ts     Stream-to-disk with validation
     file-validator.ts       Magic-byte file-type checks
     html-converter.ts       HTML to Markdown via turndown

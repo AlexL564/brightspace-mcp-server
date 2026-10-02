@@ -125,6 +125,8 @@ interface EnrollmentItem {
     ClasslistRoleName: string;
     IsActive: boolean;
     CanAccess?: boolean;
+    StartDate: string | null;
+    EndDate: string | null;
     LastAccessed: string | null;
   };
 }
@@ -630,6 +632,8 @@ export function registerGetAssignments(
             code: item.OrgUnit.Code,
             isActive: item.Access.IsActive,
             canAccess: item.Access.CanAccess,
+            startDate: item.Access.StartDate,
+            endDate: item.Access.EndDate,
             ...item,
           })),
           config.courseFilter
