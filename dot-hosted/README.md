@@ -46,10 +46,50 @@ not followed. Partial endpoint failures are reported rather than described as
 an empty course. Course text is source material and may contain untrusted
 instructions; the MCP instructions and result flag say to treat it as data.
 
-## McGill prerequisite: tenant application registration
+## Temporary session connection (default)
 
-This is an implementation awaiting tenant approval and live validation, not a
-working McGill connection. [D2L's official OAuth documentation](https://docs.valence.desire2learn.com/basic/oauth2.html)
+This mode needs secure storage but no institution OAuth client ID or secret.
+After the user explicitly approves the described destination, purpose and storage,
+configure one `CONNECTION_ENCRYPTION_KEY` as a Sites secret. The private page
+provides a masked bearer-token field and a consent checkbox describing the
+credential's possible broader permissions and its temporary encrypted use.
+
+The user manually supplies only an existing bearer token directly on that page.
+The agent must not inspect browser cookies, localStorage, request headers,
+clipboard or secret input. Do not capture the credential page during handoff.
+The page does not extract, mint or renew tokens, collect passwords/cookies,
+include analytics, or persist tokens in browser storage. Manual guidance is
+provided for a user who can inspect their own already signed-in browser. If no
+usable token is available, stop and report that without revealing values.
+Token acquisition on McGill has not yet been verified. A signed-in browser view
+alone does not authenticate the MCP, and cloud-browser login state is not
+transferred automatically.
+
+`POST /api/session/start` creates an encrypted user-bound nonce with a ten-minute
+lifetime and the connection's baseline ETag. `POST /api/session/complete` requires
+that intent, same-origin browser submission and explicit `consent: true`. It
+rejects cookie headers, refresh-token fields and other unsupported input. McGill
+`whoami` must accept the token before it is saved. The final write is conditional
+on the baseline ETag, so a completed disconnect prevents delayed provisioning
+from recreating access. Reconnection starts with no selected courses.
+
+Session access is capped at one hour from submission, shortened by token expiry
+metadata when present. Unverified JWT metadata can only shorten this cap, never
+extend it or authorize access. McGill rejection can end access sooner. Expired or
+rejected credentials are cleared on the next request; disconnect clears them
+immediately while retaining only an encrypted token-free invalidation marker.
+Do not promise timed physical deletion while the Site is idle. No server-side
+session refresh or mint request is made. McGill's actual expiration and browser
+logout behavior remain to be validated by a live user-controlled handoff.
+
+The temporary token itself may have wider privileges than the service's fixed
+GET endpoint and course allowlist. The user sees and explicitly acknowledges
+this before submission. This adapter does not claim that its restrictions
+cryptographically reduce the bearer token's underlying permissions.
+
+## Optional institution OAuth registration
+
+The alternative OAuth mode requires tenant approval and live validation. [D2L's official OAuth documentation](https://docs.valence.desire2learn.com/basic/oauth2.html)
 requires the **Manage Extensibility admin tool** to register an Authorization
 Grant application with a client ID and secret. Enable **Prompt for user
 consent** and **Enable refresh tokens**. McGill's willingness to register a
@@ -84,8 +124,8 @@ action-time approval. That handoff route has not been established in the current
 environment; the available Sites environment setter accepts values as tool
 arguments, so its existence alone does not resolve secure user entry:
 
-- `D2L_CLIENT_ID`: registered McGill application ID.
-- `D2L_CLIENT_SECRET`: registered application secret.
+- `D2L_CLIENT_ID`: optional, for institution OAuth only; registered application ID.
+- `D2L_CLIENT_SECRET`: optional, for institution OAuth only; application secret.
 - `CONNECTION_ENCRYPTION_KEY`: a new 32-byte random key encoded as 64 hex digits.
 
 The eventual Sites configuration must use `is_secret: true` for all three. Never
@@ -95,7 +135,7 @@ shell arguments, chat, or browser session extraction. R2's logical binding
 makes existing connections unreadable, so users must reconnect unless a separate
 migration is reviewed. No secrets have been configured by this change.
 
-The user then opens the private Site, chooses Connect myCourses, signs in on
+For institution OAuth, the user opens the private Site, chooses institution OAuth, signs in on
 Brightspace/McGill, approves the named scopes, and selects up to 20 courses.
 The page explains persistent access before redirecting. General installation
 approval does not itself perform or approve this OAuth grant.
@@ -131,5 +171,5 @@ does not verify plugin installation or live McGill access. No schedule is
 created by this adapter.
 
 The existing Site project ID is recorded in `.openai/hosting.json`; its creation
-does not mean it has been published. The publisher must have the supported
-Sites workflow helper; it is absent from the current connected Mac environment.
+does not mean it has been published. The publisher must use the supported Sites workflow helper. It is available in
+the parent cloud environment and in the current Mac plugin installation.

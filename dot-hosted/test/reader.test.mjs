@@ -80,7 +80,7 @@ test('own-course list is filtered and other users cannot use the saved connectio
   const e=env();await writeConnection(e,'alice',connection());const f=fixture();
   const result=await callTool(e,'alice','get_my_courses',{},f.fetch);
   assert.deepEqual(result.courses.map(x=>x.id),[11]);
-  await assert.rejects(callTool(e,'bob','get_my_courses',{},f.fetch),/Connect myCourses/);
+  await assert.rejects(callTool(e,'bob','get_my_courses',{},f.fetch),/Reconnect myCourses/);
   assert.ok(f.calls.every(x=>x.options.headers.Authorization==='Bearer mock-access-alice'));
 });
 test('normal deadlines and calendar are combined; McGill calls use GET only',async()=>{
@@ -199,4 +199,60 @@ test('fresh sign-in after a disconnect can establish a new connection',async()=>
   const start=await worker.fetch(request('/api/connect',{method:'POST',data:{}}),e);const auth=new URL((await start.json()).authorizationUrl);
   assert.equal((await worker.fetch(request('/oauth/callback?state='+auth.searchParams.get('state')+'&code=mock-code'),e)).status,303);
   assert.equal((await readConnection(e,'alice')).value.accessToken,'mock-fresh');
+});
+async function sessionStart(worker,e,id='alice'){
+  const result=await worker.fetch(request('/api/session/start',{id,method:'POST',data:{}}),e);
+  assert.equal(result.status,200);return (await result.json()).nonce;
+}
+test('temporary session setup works without institution credentials and stores only encrypted bearer access',async()=>{
+  const e=env();delete e.D2L_CLIENT_ID;delete e.D2L_CLIENT_SECRET;const f=fixture();const worker=createWorker(f.fetch);
+  const nonce=await sessionStart(worker,e);const connected=await worker.fetch(request('/api/session/complete',{method:'POST',data:{nonce,token:'mock-access-alice',consent:true}}),e);
+  assert.equal(connected.status,200);assert.ok(!(await connected.text()).includes('mock-access-alice'));
+  const saved=await readConnection(e,'alice');assert.equal(saved.value.mode,'session');assert.ok(!saved.value.refreshToken);assert.deepEqual(saved.value.selectedCourses,[]);
+  assert.ok(saved.value.expiresAt<=Date.now()+3600000);assert.ok([...e.CONNECTIONS.records.values()].every(x=>!x.text.includes('mock-access-alice')));
+  const selected=await worker.fetch(request('/api/select',{method:'POST',data:{courseIds:[11]}}),e);assert.equal(selected.status,200);
+  assert.deepEqual((await callTool(e,'alice','get_my_courses',{},f.fetch)).courses.map(x=>x.id),[11]);
+});
+test('temporary token entry requires identity, origin, consent, and the correct user-bound intent',async()=>{
+  const e=env();const f=fixture();const worker=createWorker(f.fetch);const nonce=await sessionStart(worker,e);
+  const data={nonce,token:'mock-access-alice',consent:true};
+  assert.equal((await worker.fetch(request('/api/session/complete',{id:null,method:'POST',data}),e)).status,401);
+  assert.equal((await worker.fetch(request('/api/session/complete',{siteOrigin:'https://evil.test',method:'POST',data}),e)).status,403);
+  assert.equal((await worker.fetch(request('/api/session/complete',{id:'bob',method:'POST',data}),e)).status,403);
+  assert.equal((await worker.fetch(request('/api/session/complete',{method:'POST',data:{...data,consent:false}}),e)).status,403);
+  assert.equal(f.calls.length,0);assert.equal(await readConnection(e,'alice'),null);
+});
+test('temporary token provision cannot recreate access after disconnect during validation',async()=>{
+  const e=env();let worker;const f=fixture(async url=>{if(url.pathname.endsWith('/users/whoami')){assert.equal((await worker.fetch(request('/api/disconnect',{method:'POST',data:{}}),e)).status,200);return response({Identifier:'777'});}});worker=createWorker(f.fetch);
+  const nonce=await sessionStart(worker,e);const result=await worker.fetch(request('/api/session/complete',{method:'POST',data:{nonce,token:'mock-access-alice',consent:true}}),e);
+  assert.equal(result.status,409);assert.equal(await readConnection(e,'alice'),null);
+});
+test('completed temporary session intent cannot be replayed',async()=>{
+  const e=env();const f=fixture();const worker=createWorker(f.fetch);const nonce=await sessionStart(worker,e);const data={nonce,token:'mock-access-alice',consent:true};
+  assert.equal((await worker.fetch(request('/api/session/complete',{method:'POST',data}),e)).status,200);const count=f.calls.length;
+  assert.equal((await worker.fetch(request('/api/session/complete',{method:'POST',data}),e)).status,403);assert.equal(f.calls.length,count);
+});
+test('temporary credentials reject cookies and unknown fields without requesting McGill',async()=>{
+  const e=env();const f=fixture();const worker=createWorker(f.fetch);const nonce=await sessionStart(worker,e);
+  for(const data of [{nonce,token:'d2lSessionVal=mock; d2lSecureSessionVal=mock',consent:true},{nonce,token:'mock-token',consent:true,cookies:'mock-cookie'},{nonce,token:'mock-token',consent:true,refreshToken:'mock-refresh'}]){
+    assert.equal((await worker.fetch(request('/api/session/complete',{method:'POST',data}),e)).status,400);
+  }
+  assert.equal(f.calls.length,0);
+});
+test('expiry and McGill rejection clear temporary credentials without renewal',async()=>{
+  for(const expired of [true,false]){
+    const e=env();await writeConnection(e,'alice',connection({mode:'session',refreshToken:undefined,expiresAt:expired?0:Date.now()+3600000}));
+    const f=fixture(()=>response({privateDetail:'mock-secret'},401));
+    await assert.rejects(callTool(e,'alice','get_my_courses',{},f.fetch),/Reconnect|Reverify/);
+    assert.equal(await readConnection(e,'alice'),null);assert.ok(f.calls.every(x=>x.options.method==='GET'));
+    assert.ok(![...e.CONNECTIONS.records.values()].some(x=>x.text.includes('mock-access-alice')));
+  }
+});
+test('JWT metadata can shorten the temporary limit but cannot extend it',async()=>{
+  for(const seconds of [300,86400]){
+    const e=env();const worker=createWorker(fixture().fetch);const nonce=await sessionStart(worker,e);
+    const before=Date.now();const exp=Math.floor(before/1000)+seconds;const token='mock.'+Buffer.from(JSON.stringify({exp})).toString('base64url')+'.mock';
+    assert.equal((await worker.fetch(request('/api/session/complete',{method:'POST',data:{nonce,token,consent:true}}),e)).status,200);
+    const saved=await readConnection(e,'alice');assert.ok(saved.value.expiresAt<=Math.min(before+3600100,exp*1000));
+  }
 });
