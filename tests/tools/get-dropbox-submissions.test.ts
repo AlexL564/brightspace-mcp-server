@@ -99,6 +99,76 @@ describe("get_dropbox_submissions", () => {
     expect(parsed.note).toBe("No submissions found for this dropbox folder.");
   });
 
+  it("defaults activeOnly to false, returning graded submissions too", async () => {
+    const { call } = setup((path) => {
+      if (path.endsWith("/dropbox/folders/")) return [folder];
+      if (path.endsWith("/submissions/")) {
+        return [submission({ Id: 1, SubmittedBy: { Identifier: "501", DisplayName: "Graded" } })];
+      }
+      if (path.includes("/feedback/user/501")) {
+        return { Score: 90, Feedback: { Text: "Nice work", Html: "" }, IsGraded: true };
+      }
+      throw notFound();
+    });
+
+    const result = await call({ courseId: COURSE_ID, folderId: FOLDER_ID });
+    const parsed = body(result);
+    expect(parsed.activeOnly).toBe(false);
+    expect(parsed.submissions.map((s: any) => s.userId)).toEqual(["501"]);
+  });
+
+  it("caps returned submissions at limit and reports truncation", async () => {
+    const subs = [1, 2, 3].map((n) =>
+      submission({ Id: n, SubmittedBy: { Identifier: String(500 + n), DisplayName: `S${n}` } })
+    );
+    const { call } = setup((path) => {
+      if (path.endsWith("/dropbox/folders/")) return [folder];
+      if (path.endsWith("/submissions/")) return subs;
+      throw notFound();
+    });
+
+    const result = await call({ courseId: COURSE_ID, folderId: FOLDER_ID, limit: 2 });
+    const parsed = body(result);
+    expect(parsed.totalSubmissions).toBe(3);
+    expect(parsed.returnedSubmissions).toBe(2);
+    expect(parsed.truncated).toBe(true);
+    expect(parsed.note).toContain("Showing 2 of 3");
+    expect(parsed.submissions).toHaveLength(2);
+  });
+
+  it("does not report truncation when total is within limit", async () => {
+    const { call } = setup((path) => {
+      if (path.endsWith("/dropbox/folders/")) return [folder];
+      if (path.endsWith("/submissions/")) return [submission()];
+      throw notFound();
+    });
+
+    const result = await call({ courseId: COURSE_ID, folderId: FOLDER_ID, limit: 50 });
+    const parsed = body(result);
+    expect(parsed.truncated).toBe(false);
+    expect(parsed.note).toBeUndefined();
+  });
+
+  it("fetches feedback only for the kept (post-limit) slice, not the truncated tail", async () => {
+    const subs = [1, 2, 3].map((n) =>
+      submission({ Id: n, SubmittedBy: { Identifier: String(500 + n), DisplayName: `S${n}` } })
+    );
+    const feedbackRequests: string[] = [];
+    const { call } = setup((path) => {
+      if (path.endsWith("/dropbox/folders/")) return [folder];
+      if (path.endsWith("/submissions/")) return subs;
+      if (path.includes("/feedback/user/")) {
+        feedbackRequests.push(path);
+        throw notFound();
+      }
+      throw notFound();
+    });
+
+    await call({ courseId: COURSE_ID, folderId: FOLDER_ID, limit: 2 });
+    expect(feedbackRequests).toHaveLength(2);
+    expect(feedbackRequests.some((p) => p.includes("/feedback/user/503"))).toBe(false);
+  });
+
   it("activeOnly filters out submissions already graded", async () => {
     const { call } = setup((path) => {
       if (path.endsWith("/dropbox/folders/")) return [folder];

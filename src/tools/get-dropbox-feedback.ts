@@ -96,7 +96,9 @@ export function registerGetDropboxFeedback(
           rubricId: ra.RubricId,
           rubricName: ra.Name,
           totalPoints: ra.TotalPoints,
-          criteria: ra.Criteria.map((c) => ({
+          // Adapted from get-rubrics-for-object.ts's defensive ?? [] — some
+          // tenants return a null Criteria array on an unscored assessment.
+          criteria: (ra.Criteria ?? []).map((c) => ({
             criterionId: c.CriterionId,
             selectedLevelId: c.LevelId,
             points: c.Points,

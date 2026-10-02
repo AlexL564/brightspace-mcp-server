@@ -62,8 +62,9 @@ export function registerGetRubricsForObject(
       title: "Get Rubrics for Dropbox Folder",
       description:
         "Retrieve the full rubric table (criteria, levels, and point values) attached to a dropbox " +
-        "folder, for an instructor or TA. Use get_dropbox_folders first to find folderId. Requires " +
-        "instructor or TA access to the course.",
+        "folder, for an instructor or TA. Use get_dropbox_folders first to find folderId. Like " +
+        "get_dropbox_folders, this reads the folder listing's embedded rubric data, so it is not " +
+        "gated to instructor/TA accounts the way get_dropbox_submissions and get_dropbox_feedback are.",
       inputSchema: GetRubricsForObjectSchema,
     },
     async (args: any) => {

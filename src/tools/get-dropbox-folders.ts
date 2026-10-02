@@ -58,7 +58,9 @@ export function registerGetDropboxFolders(
         "name, due date, start/end dates, submission type, visibility, and whether rubrics are attached. " +
         "Use this to discover folderId values before calling get_dropbox_submissions, " +
         "get_dropbox_user_submissions, get_dropbox_feedback, or get_rubrics_for_object. " +
-        "Requires instructor or TA access to the course; a student account gets a clear note instead of data.",
+        "This reads the same folder listing a student's own client uses, so it is not gated to " +
+        "instructor/TA accounts the way get_dropbox_submissions, get_dropbox_feedback, and " +
+        "download_dropbox_submission_file are.",
       inputSchema: GetDropboxFoldersSchema,
     },
     async (args: any) => {

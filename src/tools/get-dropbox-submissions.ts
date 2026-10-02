@@ -42,6 +42,28 @@ interface D2LDropboxFolder {
   Assessment: { ScoreDenominator: number | null } | null;
 }
 
+// Per-submitter feedback lookup is one GET each; cap how many run at once so
+// a large dropbox folder can't fan out hundreds of concurrent requests.
+const FEEDBACK_FETCH_CONCURRENCY = 8;
+
+/** Run `fn` over `items`, at most `concurrency` in flight at a time. */
+async function mapWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<void>
+): Promise<void> {
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      const item = items[next++];
+      await fn(item);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, worker)
+  );
+}
+
 /**
  * Register get_dropbox_submissions tool.
  */
@@ -58,14 +80,15 @@ export function registerGetDropboxSubmissions(
         "submitter names, submission dates, late status, file lists, and feedback/grading status. " +
         "Use get_dropbox_folders first to find folderId. Requires instructor or TA access; a student " +
         "account gets a clear note instead of data (a student's own download_file / get_assignments " +
-        "already cover their own submission).",
+        "already cover their own submission). Results are capped by limit (default 100, max 1000); " +
+        "a truncated response says so and only fetches feedback for the returned slice.",
       inputSchema: GetDropboxSubmissionsSchema,
     },
     async (args: any) => {
       try {
         log("DEBUG", "get_dropbox_submissions tool called", { args });
 
-        const { courseId, folderId, activeOnly, ignoreFeedback } =
+        const { courseId, folderId, activeOnly, ignoreFeedback, limit } =
           GetDropboxSubmissionsSchema.parse(args);
 
         const folderPath = apiClient.le(courseId, "/dropbox/folders/");
@@ -121,33 +144,39 @@ export function registerGetDropboxSubmissions(
           });
         }
 
-        // Optionally fetch feedback for every submitter. Best-effort: a
-        // submitter with no feedback yet simply has none in the map.
+        // Cap the fan-out up front: a large dropbox folder could otherwise
+        // mean hundreds of concurrent per-submitter feedback GETs and an
+        // unbounded payload. Only the kept slice gets a feedback lookup.
+        const total = rawSubmissions.length;
+        const truncated = total > limit;
+        const kept = truncated ? rawSubmissions.slice(0, limit) : rawSubmissions;
+
+        // Optionally fetch feedback for each kept submitter, a bounded
+        // number at a time. Best-effort: a submitter with no feedback yet
+        // simply has none in the map.
         const feedbackMap = new Map<string, D2LFeedback>();
         if (!ignoreFeedback) {
-          await Promise.allSettled(
-            rawSubmissions.map(async (sub) => {
-              try {
-                const userId = sub.SubmittedBy.Identifier;
-                const feedbackPath = apiClient.le(
-                  courseId,
-                  `/dropbox/folders/${folderId}/feedback/user/${userId}`
-                );
-                const fb = await apiClient.get<D2LFeedback>(feedbackPath);
-                feedbackMap.set(userId, fb);
-              } catch {
-                // No feedback yet, or this submitter's feedback route
-                // otherwise failed — silently skip, matching the "not
-                // graded yet" default below.
-              }
-            })
-          );
+          await mapWithConcurrency(kept, FEEDBACK_FETCH_CONCURRENCY, async (sub) => {
+            try {
+              const userId = sub.SubmittedBy.Identifier;
+              const feedbackPath = apiClient.le(
+                courseId,
+                `/dropbox/folders/${folderId}/feedback/user/${userId}`
+              );
+              const fb = await apiClient.get<D2LFeedback>(feedbackPath);
+              feedbackMap.set(userId, fb);
+            } catch {
+              // No feedback yet, or this submitter's feedback route
+              // otherwise failed — silently skip, matching the "not
+              // graded yet" default below.
+            }
+          });
         }
 
         const dueDate = folder?.DueDate ? new Date(folder.DueDate) : null;
         const maxScore = folder?.Assessment?.ScoreDenominator ?? null;
 
-        const submissions = rawSubmissions.map((sub) => {
+        const submissions = kept.map((sub) => {
           const userId = sub.SubmittedBy.Identifier;
           const submittedAt = new Date(sub.SubmissionDate);
           const isLate = dueDate !== null && submittedAt > dueDate;
@@ -189,7 +218,8 @@ export function registerGetDropboxSubmissions(
 
         log(
           "INFO",
-          `get_dropbox_submissions: ${filtered.length} submissions (of ${rawSubmissions.length} total) for folder ${folderId}`
+          `get_dropbox_submissions: ${filtered.length} submissions (of ${total} total) for folder ${folderId}`,
+          { truncated }
         );
 
         return toolResponse({
@@ -198,8 +228,12 @@ export function registerGetDropboxSubmissions(
           folderName: folder?.Name ?? null,
           dueDate: folder?.DueDate ?? null,
           maxScore,
-          totalSubmissions: rawSubmissions.length,
+          totalSubmissions: total,
           returnedSubmissions: filtered.length,
+          truncated,
+          ...(truncated
+            ? { note: `Showing ${kept.length} of ${total} submissions. Raise the limit argument to see more.` }
+            : {}),
           activeOnly,
           submissions: filtered,
         });

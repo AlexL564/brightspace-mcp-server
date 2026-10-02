@@ -188,7 +188,7 @@ export const GetServerInfoSchema = z.object({});
 
 export const GetDropboxFoldersSchema = z.object({
   courseId: z.coerce.number().int().positive()
-    .describe("Course ID to list dropbox (assignment) folders for. Requires instructor or TA access to the course."),
+    .describe("Course ID to list dropbox (assignment) folders for."),
 });
 
 export const GetDropboxSubmissionsSchema = z.object({
@@ -196,10 +196,12 @@ export const GetDropboxSubmissionsSchema = z.object({
     .describe("Course ID the dropbox folder belongs to."),
   folderId: z.coerce.number().int().positive()
     .describe("Dropbox folder ID to list submissions for. Use get_dropbox_folders to find it."),
-  activeOnly: z.boolean().default(true)
-    .describe("When true, skip submissions that have already been fully graded (feedback published with a score)."),
+  activeOnly: z.boolean().default(false)
+    .describe("When true, skip submissions that have already been fully graded (feedback published with a score). Default false: returns every submission, graded and ungraded."),
   ignoreFeedback: z.boolean().default(false)
     .describe("When true, omit feedback status from each submission entry to reduce response size."),
+  limit: z.coerce.number().int().positive().max(1000).default(100)
+    .describe("Maximum submissions to return. Default 100. The response reports the true total and whether it was truncated; feedback is only fetched for the returned slice."),
 });
 
 export const GetDropboxUserSubmissionsSchema = z.object({

@@ -70,6 +70,22 @@ describe("get_dropbox_feedback", () => {
     expect(parsed.note).toContain("not been graded yet");
   });
 
+  it("treats a null Criteria array on a rubric assessment as empty, not a crash", async () => {
+    const { call } = setup(() => ({
+      Score: 80,
+      Feedback: null,
+      IsGraded: true,
+      RubricAssessments: [
+        { RubricId: 7, Name: "Lab rubric", TotalPoints: 10, Criteria: null },
+      ],
+    }));
+
+    const result = await call({ courseId: COURSE_ID, folderId: FOLDER_ID, entityType: "user", entityId: USER_ID });
+    expect(result.isError).toBeUndefined();
+    const parsed = body(result);
+    expect(parsed.feedback.rubricAssessments[0]).toMatchObject({ rubricId: 7, criteria: [] });
+  });
+
   it("supports entityType group", async () => {
     const requested: string[] = [];
     const { call } = setup((path) => {
