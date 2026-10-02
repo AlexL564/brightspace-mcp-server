@@ -44,7 +44,7 @@ Paste this into Claude Code, Cursor, Windsurf, Copilot, Codex, or any AI coding 
 ```
 Install brightspace-mcp-server for me by following
 https://github.com/RohanMuppa/brightspace-mcp-server/blob/main/LLMs.md
-(use --purdue at Purdue, --suny at SUNY, --tudelft at TU Delft, --cuny at CUNY, or --leiden at Leiden).
+(use --purdue at Purdue, --suny at SUNY, --tudelft at TU Delft, --cuny at CUNY, --leiden at Leiden, or --mcgill at McGill).
 ```
 
 **Option 2: Run it yourself**
@@ -141,6 +141,7 @@ Building against this server or opening a PR? See [STABILITY.md](STABILITY.md) f
 | TU Delft | NetID via SURFconext (headless, no MFA) | `--tudelft` |
 | CUNY | CUNY Login, with an authenticator code on every full sign-in | `--cuny` |
 | Leiden University | SURFconext → Microsoft Entra | `--leiden` |
+| McGill University | Microsoft Entra | `--mcgill` |
 | Any other D2L school | Paste your Brightspace URL; unsupported login pages fall back to the visible browser | run `setup` with no flag |
 
 ## Session Expired?

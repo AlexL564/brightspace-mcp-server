@@ -213,6 +213,7 @@ src/
     purdue-sso.ts           Default SSO handler (Shibboleth, CAS, Entra forms)
     suny-sso.ts             SUNY campus selection
     cuny-sso.ts             CUNY Login (Oracle OAM) credentials and authenticator code
+    mcgill-sso.ts           McGill myCourses SAML entry point, then shared Entra flow
     session-store.ts        AES-256-GCM token persistence and v1 migration
     browser-state-store.ts  Encrypted cookie and browser storage persistence
     credential-store.ts     Native password and encryption-key storage
@@ -241,6 +242,7 @@ src/
 | `npx -y brightspace-mcp-server@latest setup --purdue` | Setup with Purdue preset |
 | `npx -y brightspace-mcp-server@latest setup --suny` | Setup with SUNY preset (also asks for campus) |
 | `npx -y brightspace-mcp-server@latest setup --cuny` | Setup with CUNY preset |
+| `npx -y brightspace-mcp-server@latest setup --mcgill` | Setup with McGill preset |
 | `npx -y brightspace-mcp-server@latest auth` | Manual reauth |
 | `npx -y brightspace-mcp-server@latest` | Run the MCP server (registered in AI client config) |
 | `npm run build` | Compile TypeScript to `build/` |
