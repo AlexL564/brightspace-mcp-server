@@ -54,7 +54,7 @@ npx -y brightspace-mcp-server@latest setup --cuny
 
 The wizard:
 
-- prompts for the school's Brightspace URL (skipped with `--purdue`, `--suny`, or `--cuny`)
+- prompts for the school's Brightspace URL (skipped with `--purdue`, `--suny`, `--cuny`, or `--ngeeann`)
 - asks whether MFA uses device approval, terminal code entry, or a visible browser, then authenticates accordingly
 - saves the password in the native credential store and public settings in `~/.brightspace-mcp/config.json` (0600)
 - writes the encrypted session below `~/.d2l-session/accounts/<account-hash>/` (AES-256-GCM)
@@ -241,6 +241,7 @@ src/
 | `npx -y brightspace-mcp-server@latest setup --purdue` | Setup with Purdue preset |
 | `npx -y brightspace-mcp-server@latest setup --suny` | Setup with SUNY preset (also asks for campus) |
 | `npx -y brightspace-mcp-server@latest setup --cuny` | Setup with CUNY preset |
+| `npx -y brightspace-mcp-server@latest setup --ngeeann` | Setup with Ngee Ann Polytechnic preset |
 | `npx -y brightspace-mcp-server@latest auth` | Manual reauth |
 | `npx -y brightspace-mcp-server@latest` | Run the MCP server (registered in AI client config) |
 | `npm run build` | Compile TypeScript to `build/` |
