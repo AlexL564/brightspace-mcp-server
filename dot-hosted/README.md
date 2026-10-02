@@ -27,13 +27,16 @@ course IDs, and temporary sign-in state. AES-256-GCM uses the Sites user ID as
 authenticated data; object keys use its SHA-256 digest. No course content is
 persisted, no tokens are returned to the client, and no request bodies are logged.
 Only the identity header is trusted; email and names are not authorization keys.
-Removing a connection deletes its token/state objects. Revoke the application
+Removing a connection clears its tokens and pending state, retaining an encrypted
+disconnected marker so in-flight grants cannot recreate access. Revoke the application
 consent in Brightspace to revoke the underlying grant too.
 
 Refresh tokens are single-use. Refresh calls use an R2 conditional-write lease
 across Worker instances and one shared promise within an instance. Optimistic
 writes preserve concurrent selection changes and cannot resurrect a disconnected
-or replaced connection. A concurrent instance returns a retryable conflict.
+or replaced connection. OAuth sign-in starts from a conditional-write baseline
+that a successful disconnect invalidates, including the first sign-in before any
+connection exists. A concurrent instance returns a retryable conflict.
 An abandoned lease expires after two minutes. A process crash after Brightspace
 rotates a refresh token but before its persistence may require reconnecting.
 
@@ -110,7 +113,7 @@ node scripts/validate-artifact.mjs
 The tests use synthetic records and tokens, never real services. They cover
 anonymous requests, encrypted per-user storage, course filtering, tool argument
 restrictions, normal reads, unsafe pagination, partial permission failures,
-refresh/revocation/disconnect races, callback replay, and the page's CSP hash.
+refresh/revocation/disconnect races, callback replay, disconnect during initial grant, and the page's CSP hash.
 
 Publish **dot-hosted** as the Site checkout using the Sites skill's bundled
 `site-workflow.mjs`. Run the checks/build above through its command arrays,

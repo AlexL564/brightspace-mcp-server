@@ -171,3 +171,32 @@ test('OAuth token must be accepted by McGill before it is persisted',async()=>{
   const failed=await worker.fetch(request('/oauth/callback?state='+auth.searchParams.get('state')+'&code=mock-code'),e);
   assert.equal(failed.status,403);assert.ok(!(await failed.text()).includes('do not reveal'));assert.equal(await readConnection(e,'alice'),null);
 });
+test('successful disconnect invalidates the first OAuth grant during token exchange',async()=>{
+  const e=env();let worker;const f=fixture(async(url)=>{if(url.origin==='https://auth.brightspace.com'){
+    const disconnected=await worker.fetch(request('/api/disconnect',{method:'POST',data:{}}),e);
+    assert.equal(disconnected.status,200);
+    return response({access_token:'mock-inflight',refresh_token:'mock-inflight-refresh',expires_in:3600,scope:SCOPES.join(' ')});
+  }});worker=createWorker(f.fetch);
+  const start=await worker.fetch(request('/api/connect',{method:'POST',data:{}}),e);const auth=new URL((await start.json()).authorizationUrl);
+  const callbackPath='/oauth/callback?state='+auth.searchParams.get('state')+'&code=mock-code';
+  const finished=await worker.fetch(request(callbackPath),e);assert.equal(finished.status,409);
+  assert.equal(await readConnection(e,'alice'),null);
+  const status=await worker.fetch(request('/api/status'),e);assert.equal((await status.json()).connected,false);
+  assert.equal((await worker.fetch(request(callbackPath),e)).status,403);
+});
+test('successful disconnect invalidates a first OAuth grant during identity verification',async()=>{
+  const e=env();let worker;const f=fixture(async(url)=>{
+    if(url.origin==='https://auth.brightspace.com')return response({access_token:'mock-inflight',refresh_token:'mock-inflight-refresh',expires_in:3600,scope:SCOPES.join(' ')});
+    if(url.pathname.endsWith('/users/whoami')){assert.equal((await worker.fetch(request('/api/disconnect',{method:'POST',data:{}}),e)).status,200);return response({Identifier:'777'});}
+  });worker=createWorker(f.fetch);
+  const start=await worker.fetch(request('/api/connect',{method:'POST',data:{}}),e);const auth=new URL((await start.json()).authorizationUrl);
+  const finished=await worker.fetch(request('/oauth/callback?state='+auth.searchParams.get('state')+'&code=mock-code'),e);
+  assert.equal(finished.status,409);assert.equal(await readConnection(e,'alice'),null);
+});
+test('fresh sign-in after a disconnect can establish a new connection',async()=>{
+  const e=env();const f=fixture(url=>url.origin==='https://auth.brightspace.com'?response({access_token:'mock-fresh',refresh_token:'mock-fresh-refresh',expires_in:3600,scope:SCOPES.join(' ')}):undefined);const worker=createWorker(f.fetch);
+  assert.equal((await worker.fetch(request('/api/disconnect',{method:'POST',data:{}}),e)).status,200);
+  const start=await worker.fetch(request('/api/connect',{method:'POST',data:{}}),e);const auth=new URL((await start.json()).authorizationUrl);
+  assert.equal((await worker.fetch(request('/oauth/callback?state='+auth.searchParams.get('state')+'&code=mock-code'),e)).status,303);
+  assert.equal((await readConnection(e,'alice')).value.accessToken,'mock-fresh');
+});
