@@ -10,7 +10,7 @@ import { fetchAllItems } from "../api/paginate.js";
 import {
   GetMyGradesSchema,
 } from "./schemas.js";
-import { toolResponse, sanitizeError } from "./tool-helpers.js";
+import { toolResponse, sanitizeError, isAuthUnavailable, authPendingNotice } from "./tool-helpers.js";
 import { log } from "../utils/logger.js";
 import { applyCourseFilter } from "../utils/course-filter.js";
 import type { AppConfig } from "../types/index.js";
@@ -68,25 +68,47 @@ export function registerGetMyGrades(
 
         // Single course case
         if (courseId) {
-          const path = apiClient.le(courseId, "/grades/values/myGradeValues/");
-          const gradeValues = await apiClient.get<GradeValue[]>(path, {
-            ttl: DEFAULT_CACHE_TTLS.grades,
-          });
+          try {
+            const path = apiClient.le(courseId, "/grades/values/myGradeValues/");
+            const gradeValues = await apiClient.get<GradeValue[]>(path, {
+              ttl: DEFAULT_CACHE_TTLS.grades,
+            });
 
-          // Map to clean objects
-          const grades = gradeValues.map((gv) => ({
-            name: gv.GradeObjectName,
-            displayGrade: gv.DisplayedGrade,
-            pointsNumerator: gv.PointsNumerator,
-            pointsDenominator: gv.PointsDenominator,
-            weightedNumerator: gv.WeightedNumerator,
-            weightedDenominator: gv.WeightedDenominator,
-            comments: gv.Comments?.Text || null,
-            lastModified: gv.LastModified,
-          }));
+            // Map to clean objects
+            const grades = gradeValues.map((gv) => ({
+              name: gv.GradeObjectName,
+              displayGrade: gv.DisplayedGrade,
+              pointsNumerator: gv.PointsNumerator,
+              pointsDenominator: gv.PointsDenominator,
+              weightedNumerator: gv.WeightedNumerator,
+              weightedDenominator: gv.WeightedDenominator,
+              comments: gv.Comments?.Text || null,
+              lastModified: gv.LastModified,
+            }));
 
-          log("INFO", `get_my_grades: Retrieved ${grades.length} grade items for course ${courseId}`);
-          return toolResponse({ courseId, grades });
+            log("INFO", `get_my_grades: Retrieved ${grades.length} grade items for course ${courseId}`);
+            return toolResponse({ courseId, grades });
+          } catch (error) {
+            // A pending sign-in is not an empty gradebook: the route never
+            // answered, so the result says so instead of reporting zero grades
+            // as if that were a real measurement. The envelope stays a
+            // success — existing callers that only read `grades` keep
+            // working — with authPending/notice added for callers that want
+            // to tell "no grades" apart from "couldn't check".
+            if (isAuthUnavailable(error)) {
+              log("DEBUG", `get_my_grades: sign-in pending for course ${courseId}`, error);
+              return toolResponse({
+                courseId,
+                grades: [],
+                authPending: true,
+                notice:
+                  "Sign-in to Brightspace is still in progress, so grades for this course " +
+                  `could not be fetched yet. ${authPendingNotice(error)} Call get_my_grades again ` +
+                  "once sign-in finishes.",
+              });
+            }
+            throw error;
+          }
         }
 
         // All courses case
@@ -154,23 +176,70 @@ export function registerGetMyGrades(
               );
               return null;
             }
+            // A pending sign-in only means this course's route never
+            // answered — it says nothing about the other courses, whose
+            // requests may already have gone out independently. Mark this one
+            // rather than failing the whole call and losing every course that
+            // *did* answer.
+            if (isAuthUnavailable(error)) {
+              log(
+                "DEBUG",
+                `get_my_grades: sign-in pending for course ${item.OrgUnit.Id} (${item.OrgUnit.Name})`
+              );
+              return {
+                courseId: item.OrgUnit.Id,
+                courseName: item.OrgUnit.Name,
+                authPending: true as const,
+                authError: error,
+              };
+            }
             throw error; // Re-throw other errors
           }
         });
 
         const results = await Promise.allSettled(gradePromises);
-        const courses = results
+        const settled = results
           .filter(
             (r): r is PromiseFulfilledResult<any> =>
               r.status === "fulfilled" && r.value !== null
           )
           .map((r) => r.value);
 
+        const pending = settled.filter((c) => c.authPending);
+        const courses = settled
+          .filter((c) => !c.authPending)
+          .map(({ courseId, courseName, grades }) => ({ courseId, courseName, grades }));
+
         log(
           "INFO",
-          `get_my_grades: Retrieved grades for ${courses.length} courses (out of ${enrollmentItems.length} enrolled)`
+          `get_my_grades: Retrieved grades for ${courses.length} courses ` +
+          `(out of ${enrollmentItems.length} enrolled${pending.length > 0 ? `, ${pending.length} pending sign-in` : ""})`
         );
-        return toolResponse({ courses });
+
+        // Pending courses keep `grades: []` so callers that read
+        // `courses[i].grades` still get an array; authPending marks it as
+        // unchecked rather than empty.
+        const response: Record<string, unknown> = {
+          courses: [
+            ...courses,
+            ...pending.map(({ courseId, courseName }) => ({
+              courseId,
+              courseName,
+              grades: [],
+              authPending: true as const,
+            })),
+          ],
+        };
+        if (pending.length > 0) {
+          response.authPending = true;
+          response.unavailableCourseIds = pending.map((c) => c.courseId);
+          response.notice =
+            "Sign-in to Brightspace is still in progress, so grades for " +
+            `${pending.length} course(s) (${pending.map((c) => c.courseId).join(", ")}) could not be ` +
+            `fetched yet. ${authPendingNotice(pending[0].authError)} Call get_my_grades again once ` +
+            "sign-in finishes.";
+        }
+        return toolResponse(response);
       } catch (error) {
         return sanitizeError(error);
       }

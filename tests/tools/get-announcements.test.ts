@@ -488,3 +488,103 @@ describe("get_announcements attachments", () => {
     });
   });
 });
+
+/**
+ * A sign-in that has not finished is not an empty course. CLAUDE.md forbids
+ * turning a previously successful response into an error, so the tool keeps
+ * a success envelope and adds an explicit authPending/notice pair a caller
+ * can check instead. authPending only fits on an object, so it is the one
+ * case where the bare-array shape switches to the object shape modifiedSince
+ * already uses.
+ */
+
+import { AuthProcessError } from "../../src/auth/auth-runner.js";
+import { ApiError } from "../../src/api/errors.js";
+
+const mfaPending = () => new AuthProcessError("mfaPending", "MFA approval pending");
+const body = (result: any): any => JSON.parse(result.content[0].text);
+
+describe("get_announcements while sign-in is pending", () => {
+  it("reports authPending for a single course instead of an empty list read as success", async () => {
+    const { call } = setup(() => {
+      throw mfaPending();
+    });
+
+    const result = await call({ courseId: COURSE_A.Id });
+
+    expect(result.isError).toBeUndefined();
+    const parsed = body(result);
+    expect(parsed).toMatchObject({ announcements: [], authPending: true });
+    expect(parsed.notice).toContain("Approve the sign-in request");
+  });
+
+  it("reports authPending when the news route is rejected with 401", async () => {
+    const { call } = setup((path) => {
+      throw new ApiError(401, path, "expired");
+    });
+
+    const result = await call({ courseId: COURSE_A.Id });
+
+    expect(result.isError).toBeUndefined();
+    const parsed = body(result);
+    expect(parsed).toMatchObject({ announcements: [], authPending: true });
+    expect(parsed.notice).toContain("Authentication expired");
+  });
+
+  it("keeps the courses that answered when only one course's sign-in is pending", async () => {
+    const { call } = setup((path) => {
+      if (path.includes("/enrollments/")) return enrollments(COURSE_A, COURSE_B);
+      if (path.includes(`/le/1.0/${COURSE_B.Id}/`)) throw mfaPending();
+      return [news({ Id: 1, StartDate: "2026-09-18T00:00:00.000Z", IsPublished: true })];
+    });
+
+    const result = await call({});
+
+    expect(result.isError).toBeUndefined();
+    const parsed = body(result);
+    expect(parsed.authPending).toBe(true);
+    expect(parsed.unavailableCourseIds).toEqual([COURSE_B.Id]);
+    expect(parsed.announcements).toHaveLength(1);
+    expect(parsed.announcements[0].courseId).toBe(COURSE_A.Id);
+  });
+
+  it("still returns a bare array when the only failure is non-auth", async () => {
+    const { call } = setup((path) => {
+      if (path.includes("/enrollments/")) return enrollments(COURSE_A, COURSE_B);
+      if (path.includes(`/le/1.0/${COURSE_B.Id}/`)) {
+        throw Object.assign(new Error("Forbidden"), { status: 403 });
+      }
+      return [news({ Id: 1, StartDate: "2026-09-18T00:00:00.000Z", IsPublished: true })];
+    });
+
+    const result = await call({});
+
+    expect(result.isError).toBeUndefined();
+    const parsed = body(result);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toHaveLength(1);
+  });
+
+  it("keeps the modifiedSince object shape and adds authPending alongside it", async () => {
+    const { call } = setup((path) => {
+      if (path.includes("/enrollments/")) return enrollments(COURSE_A, COURSE_B);
+      if (path.includes(`/le/1.0/${COURSE_B.Id}/`)) throw mfaPending();
+      return [
+        news({
+          Id: 1,
+          StartDate: "2026-09-18T00:00:00.000Z",
+          LastModifiedDate: "2026-09-18T00:00:00.000Z",
+          IsPublished: true,
+        }),
+      ];
+    });
+
+    const result = await call({ modifiedSince: "2026-01-01T00:00:00Z" });
+
+    expect(result.isError).toBeUndefined();
+    const parsed = body(result);
+    expect(parsed.modifiedSince).toBe("2026-01-01T00:00:00Z");
+    expect(parsed.authPending).toBe(true);
+    expect(parsed.unavailableCourseIds).toEqual([COURSE_B.Id]);
+  });
+});

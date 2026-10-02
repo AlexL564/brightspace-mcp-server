@@ -10,7 +10,7 @@ import { fetchAllObjects } from "../api/paginate.js";
 import {
   GetRosterSchema,
 } from "./schemas.js";
-import { toolResponse, sanitizeError } from "./tool-helpers.js";
+import { toolResponse, sanitizeError, isAuthUnavailable, authPendingNotice } from "./tool-helpers.js";
 import { log } from "../utils/logger.js";
 
 export interface ClasslistUser {
@@ -89,77 +89,113 @@ export function registerGetRoster(
         // Parse and validate input
         const { courseId, includeStudents, searchTerm, limit } = GetRosterSchema.parse(args);
 
-        const allUsers: ClasslistUser[] = [];
+        try {
+          const allUsers: ClasslistUser[] = [];
 
-        if (!includeStudents) {
-          // Fetch instructors and TAs in parallel
-          const [instructorResult, taResult] = await Promise.allSettled([
-            fetchClasslistUsers(apiClient, courseId, {
-              roleId: INSTRUCTOR_ROLE_ID,
-              searchTerm,
-            }),
-            fetchClasslistUsers(apiClient, courseId, {
-              roleId: TA_ROLE_ID,
-              searchTerm,
-            }),
-          ]);
+          if (!includeStudents) {
+            // Fetch instructors and TAs in parallel
+            const [instructorResult, taResult] = await Promise.allSettled([
+              fetchClasslistUsers(apiClient, courseId, {
+                roleId: INSTRUCTOR_ROLE_ID,
+                searchTerm,
+              }),
+              fetchClasslistUsers(apiClient, courseId, {
+                roleId: TA_ROLE_ID,
+                searchTerm,
+              }),
+            ]);
 
-          // Merge results
-          if (instructorResult.status === "fulfilled") {
-            allUsers.push(...instructorResult.value);
+            // A pending sign-in means neither route can be trusted to have
+            // actually asked Brightspace anything — unlike a role group that
+            // is genuinely empty, which is a real measurement. Surface it
+            // rather than quietly reporting half (or none) of the roster as
+            // if that were the whole answer.
+            for (const result of [instructorResult, taResult]) {
+              if (result.status === "rejected" && isAuthUnavailable(result.reason)) {
+                throw result.reason;
+              }
+            }
+
+            // Merge results
+            if (instructorResult.status === "fulfilled") {
+              allUsers.push(...instructorResult.value);
+            } else {
+              log("WARN", "get_roster: Failed to fetch instructors", {
+                error: instructorResult.reason,
+              });
+            }
+
+            if (taResult.status === "fulfilled") {
+              allUsers.push(...taResult.value);
+            } else {
+              log("WARN", "get_roster: Failed to fetch TAs", {
+                error: taResult.reason,
+              });
+            }
           } else {
-            log("WARN", "get_roster: Failed to fetch instructors", {
-              error: instructorResult.reason,
+            // Fetch all users
+            allUsers.push(
+              ...(await fetchClasslistUsers(apiClient, courseId, { searchTerm }))
+            );
+          }
+
+          // A very large roster would swamp the response, so it is capped. The
+          // cap is reported in the payload rather than only in a log line the
+          // model never sees: a 340 person lecture used to look like a 100
+          // person one, with nothing to say otherwise.
+          const total = allUsers.length;
+          const truncated = total > limit;
+          const kept = truncated ? allUsers.slice(0, limit) : allUsers;
+
+          if (truncated) {
+            log("WARN", "get_roster: Result set exceeds the limit, truncating", {
+              total,
+              returned: kept.length,
             });
           }
 
-          if (taResult.status === "fulfilled") {
-            allUsers.push(...taResult.value);
-          } else {
-            log("WARN", "get_roster: Failed to fetch TAs", {
-              error: taResult.reason,
-            });
-          }
-        } else {
-          // Fetch all users
-          allUsers.push(
-            ...(await fetchClasslistUsers(apiClient, courseId, { searchTerm }))
-          );
-        }
+          // Map to clean output
+          const users = kept.map((user) => ({
+            name: user.DisplayName,
+            email: user.Email || null,
+            role: user.ClasslistRoleDisplayName,
+          }));
 
-        // A very large roster would swamp the response, so it is capped. The
-        // cap is reported in the payload rather than only in a log line the
-        // model never sees: a 340 person lecture used to look like a 100
-        // person one, with nothing to say otherwise.
-        const total = allUsers.length;
-        const truncated = total > limit;
-        const kept = truncated ? allUsers.slice(0, limit) : allUsers;
-
-        if (truncated) {
-          log("WARN", "get_roster: Result set exceeds the limit, truncating", {
+          log("INFO", `get_roster: Retrieved ${users.length} users for course ${courseId}`);
+          return toolResponse({
+            courseId,
             total,
-            returned: kept.length,
+            returned: users.length,
+            truncated,
+            ...(truncated
+              ? { note: `Showing ${users.length} of ${total}. Raise the limit argument to see more.` }
+              : {}),
+            users,
           });
+        } catch (error) {
+          // A pending sign-in is not an empty roster: the route never
+          // answered, so the result says so instead of reporting zero users
+          // as if that were a real measurement. The envelope stays a success
+          // — existing callers that only read `users` keep working — with
+          // authPending/notice added for callers that want to tell "empty
+          // roster" apart from "couldn't check".
+          if (isAuthUnavailable(error)) {
+            log("DEBUG", `get_roster: sign-in pending for course ${courseId}`, error);
+            return toolResponse({
+              courseId,
+              total: 0,
+              returned: 0,
+              truncated: false,
+              users: [],
+              authPending: true,
+              notice:
+                "Sign-in to Brightspace is still in progress, so the roster for this course " +
+                `could not be fetched yet. ${authPendingNotice(error)} Call get_roster again once ` +
+                "sign-in finishes.",
+            });
+          }
+          throw error;
         }
-
-        // Map to clean output
-        const users = kept.map((user) => ({
-          name: user.DisplayName,
-          email: user.Email || null,
-          role: user.ClasslistRoleDisplayName,
-        }));
-
-        log("INFO", `get_roster: Retrieved ${users.length} users for course ${courseId}`);
-        return toolResponse({
-          courseId,
-          total,
-          returned: users.length,
-          truncated,
-          ...(truncated
-            ? { note: `Showing ${users.length} of ${total}. Raise the limit argument to see more.` }
-            : {}),
-          users,
-        });
       } catch (error) {
         return sanitizeError(error);
       }
