@@ -111,6 +111,8 @@ Claude Desktop uses a separate configuration, which the setup wizard can update 
 
 </details>
 
+Building against this server or opening a PR? See [STABILITY.md](STABILITY.md) for what's safe to rely on and what counts as a breaking change.
+
 **Running from a source checkout or fork?** When a newer release is published, the server tells a source checkout to `git pull` and `npm run build` rather than to install the npm package. For a fork you maintain, set `D2L_NO_UPDATE_CHECK=1` in the server's environment to turn off upstream update notices.
 
 ## Session Expired?
@@ -149,6 +151,14 @@ Set either in your MCP client's `env` config instead of a shell export if you're
 If this is a Docker or other headless setup with no `~/.brightspace-mcp/config.json` on disk, also set **`D2L_BASE_URL`** to your school's Brightspace URL — with no config file to read it from, the server otherwise defaults to Purdue's.
 
 **The catch:** neither one renews itself. A pasted session cookie dies at D2L's own idle timeout (the same timeout that would eventually log you out in a browser), and a pre-issued token dies whenever it expires or is revoked. When that happens the server does **not** fall back to a browser login — it answers with an error telling you to paste a fresh value. There's no in-between: this is a deliberate escape hatch for environments that can't run a browser at all, not a way to skip typing your password once.
+
+## Troubleshooting
+
+**Where to find logs:** MCP clients log the server's stderr themselves. On **macOS**, Claude Desktop writes to `~/Library/Logs/Claude/mcp*.log` (one file per server, plus `mcp.log` for the client itself). On **Windows**, it's `%APPDATA%\Claude\logs`. Other clients vary — check their own logs or output panel for the `brightspace-mcp-server` process.
+
+**Works in a terminal but not in the client:** the client launches the server as its own subprocess, which doesn't inherit your shell's environment. Common causes: the native credential store is locked (a GUI app started before you unlocked your keyring or logged into macOS won't get a Keychain prompt the way a terminal does), `HOME` or `PATH` differ for GUI-launched processes versus your shell, or `npx` resolves a different cached version than the one on your `PATH`. To check, run the exact registered command (`npx -y brightspace-mcp-server@latest`, or `cmd /c npx -y brightspace-mcp-server@latest` on Windows) from a fresh terminal with no extra environment set, and compare.
+
+**Which version am I running:** ask the assistant anything that calls `get_server_info` — it reports the running version, Node runtime, and config/session paths with no network call. If you're on a source checkout instead of the published npm package, that version comes from the local `build/` output, so it only reflects your latest `npm run build`, not what's on npm.
 
 ## What You Can Ask About
 
