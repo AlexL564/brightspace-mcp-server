@@ -131,6 +131,7 @@ Registered in `src/tools/index.ts`, schemas in `src/tools/schemas.ts`:
 | `get_syllabus` | Syllabus document for a course |
 | `get_course_content` | Module tree and content topics |
 | `get_discussions` | Discussion forums and recent posts |
+| `search_course` | Keyword search across a course's content (modules/topics/file names), announcements, and discussion forums/topics in one call |
 | `get_roster` | Classlist for a course |
 | `get_my_groups` | The current user's project/discussion groups in a course, with each group's members |
 | `get_classlist_emails` | Emails of classmates and instructors |
@@ -140,7 +141,9 @@ Registered in `src/tools/index.ts`, schemas in `src/tools/schemas.ts`:
 | `get_video_transcript` | Transcript of a video embedded in course content (Kaltura, YouTube), with timestamps |
 | `get_server_info` | Running version, Node runtime, platform, config and session paths, school URL, whether a credential is stored, the server's local timezone and UTC offset (`localTimezone`, `utcOffsetMinutes`), `signedInAs` (`uniqueName`/`displayName`) once known, `microsoftSession` (what Microsoft remembered) once a browser sign-in is saved, and `requests` (lightweight API client counters) — no network call, no secrets |
 
-These eighteen are the whole surface. An available-update notice, when there is one, rides along as a second text block on the first successful result.
+These nineteen are the whole surface. An available-update notice, when there is one, rides along as a second text block on the first successful result.
+
+`search_course` reuses the same fetchers as `get_course_content`, `get_announcements`, and `get_discussions` (`fetchRootContent`/`buildContentTree`, `fetchCourseNews`, `fetchForums`/`fetchForumTopics`) rather than hitting the API a second way, so results share their cache. It scores in-memory term matches, case-insensitive and tokenized on non-alphanumerics: a result matching every query term always outranks one matching only some, and within that tier a title match outranks a body-only match. One source failing (e.g. a 403 on discussions) is skipped rather than failing the whole search, and named in the response's `note`.
 
 `get_server_info`'s `requests` field is `D2LApiClient.stats()`: `statusClasses` (counts for `2xx`/`401`/`403`/`404`/`429`/`5xx`, plus `other` for anything outside that list), `networkErrors`, `cacheHits`/`cacheMisses`, `coalescedJoins`, and `tokenRefreshes`. It is a snapshot of this process only (resets on restart), additive to the existing fields, and never carries a URL, username, or token. `coalescedJoins` comes from request coalescing in `D2LApiClient.get()`: a GET already in flight for the same unresolved path is joined instead of issuing a second fetch, which matters because Claude Desktop fans out tool calls in parallel and the tools themselves fan out per course. A TTL'd call that joins an in-flight request for the same path counts as both a cache miss (it wasn't served from the cache) and a coalesced join (it didn't issue its own fetch) -- the two counters overlap rather than partition the calls.
 
