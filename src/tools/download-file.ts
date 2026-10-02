@@ -5,18 +5,217 @@
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { D2LApiClient, ApiError } from "../api/index.js";
 import { DownloadFileSchema } from "./schemas.js";
 import { toolResponse, sanitizeError, errorResponse } from "./tool-helpers.js";
 import { log } from "../utils/logger.js";
 import { checkTopicAvailability } from "./topic-availability.js";
-// Path containment and magic-byte checks belong to secureDownload, which both
-// download paths below go through; importing them here only made it look as
-// though this file validated anything itself.
-import { validateContentId, MAX_FILE_SIZE } from "../utils/file-validator.js";
+// Path containment checks belong to secureDownload, which disk-mode downloads
+// go through; importing it here only made it look as though this file
+// validated anything itself. Inline mode never writes to disk, so it calls
+// validateFileType directly to enforce the same magic-byte allowlist.
+import { validateContentId, validateFileType, MAX_FILE_SIZE } from "../utils/file-validator.js";
 import { secureDownload } from "../utils/download-helpers.js";
+import { extractPdfText } from "../utils/pdf-extractor.js";
+import { officeDocumentText } from "../utils/zip-extract.js";
 import fs from "node:fs/promises";
 import path from "node:path";
+
+/**
+ * Maximum bytes of a file we'll embed inline in a tool response. Base64
+ * encoding (for images) adds ~33% overhead, so this stays well under typical
+ * MCP response-size limits. A file over this cap still works — the caller
+ * just needs to pass an absolute `downloadPath` to save it to disk instead.
+ */
+const INLINE_MAX_SIZE = 10 * 1024 * 1024; // 10 MB
+
+/**
+ * Maximum characters of extracted text (PDF, Office document, or plain text)
+ * inlined into a single tool response. ~400,000 characters is roughly 100k
+ * tokens — enough for most course documents — and a hard cap keeps one
+ * runaway file from dominating the conversation.
+ */
+const INLINE_TEXT_MAX_CHARS = 400_000;
+
+/**
+ * MCP ImageContent blocks are passed to Anthropic's vision pipeline, which
+ * accepts JPEG, PNG, GIF, and WebP. Any other image mime (SVG, BMP, TIFF)
+ * falls back to the generic "can't display inline" path below.
+ */
+const INLINE_IMAGE_MIMES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
+
+/** OOXML formats `officeDocumentText` (zip-extract.ts) knows how to read. */
+const INLINE_OFFICE_MIMES = new Set([
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // .docx
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // .xlsx
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation", // .pptx
+]);
+
+/** Mime types whose bytes are safe to decode as UTF-8 and inline verbatim. */
+const INLINE_TEXT_MIMES = new Set(["text/plain", "text/csv", "text/html", "application/json"]);
+
+/** Truncate text to `max` characters, noting how much was cut and why. */
+function truncateForInline(text: string, max: number): { body: string; truncated: boolean } {
+  if (text.length <= max) return { body: text, truncated: false };
+  const remaining = text.length - max;
+  return {
+    body:
+      text.slice(0, max) +
+      `\n\n[...truncated at ${max} characters; ${remaining} more characters exist in the source file. ` +
+      "Re-run with an absolute downloadPath to save the full file to disk instead...]",
+    truncated: true,
+  };
+}
+
+/**
+ * Inline mode: return the file directly in the tool response instead of
+ * writing it to disk. This is the right mode inside clients like Claude
+ * Desktop, where the MCP server's host filesystem is not the same filesystem
+ * its analysis/sandbox tools see — a file `download_file` wrote to disk there
+ * was simply unreachable from the rest of the conversation.
+ *
+ * Deliberately emits only TextContent and, for a handful of image mimes,
+ * ImageContent — never an MCP EmbeddedResource. Claude Desktop feeds an
+ * EmbeddedResource with mimeType `application/pdf` into Anthropic's document
+ * pipeline, which rejects PDFs containing JBIG2-compressed images (common in
+ * scanned academic PDFs) and can fail the *entire* tool response, even next
+ * to perfectly good TextContent blocks. Extracted text sidesteps that
+ * pipeline entirely. (Adapted from LunaParker/brightspace-mcp-server, MIT.)
+ */
+async function respondInline(
+  buffer: Buffer,
+  originalFilename: string,
+  customFilename: string | undefined
+): Promise<CallToolResult> {
+  const effectiveFilename = customFilename || originalFilename;
+
+  if (buffer.length > INLINE_MAX_SIZE) {
+    return errorResponse(
+      `File too large for inline delivery (${Math.round(buffer.length / 1024 / 1024)}MB, inline max ${INLINE_MAX_SIZE / 1024 / 1024}MB). Provide an absolute downloadPath to save it to disk instead.`
+    );
+  }
+
+  // Enforces the same magic-byte allowlist as disk mode (secureDownload calls
+  // validateFileType internally); inline mode never writes to disk, so it has
+  // to call this itself. Throws DownloadError on an unsupported or
+  // undetectable type, handled by the caller's sanitizeError.
+  const { mime } = await validateFileType(buffer, undefined, effectiveFilename);
+
+  const metadata: Record<string, unknown> = {
+    mode: "inline",
+    filename: effectiveFilename,
+    originalFilename,
+    mimeType: mime,
+    size: buffer.length,
+  };
+
+  const content: CallToolResult["content"] = [];
+
+  if (mime === "application/pdf") {
+    const extracted = await extractPdfText(buffer);
+    if (!extracted || !extracted.text) {
+      metadata.representation = "pdf_text_extraction_failed";
+      metadata.note =
+        "No text layer found in this PDF (it may be a scan). Re-run with an absolute downloadPath to save the raw file to disk.";
+      content.push({ type: "text", text: JSON.stringify(metadata, null, 2) });
+      return { content };
+    }
+    const { body, truncated } = truncateForInline(extracted.text, INLINE_TEXT_MAX_CHARS);
+    metadata.representation = "extracted_text";
+    metadata.pages = extracted.totalPages;
+    metadata.truncated = truncated;
+    content.push({ type: "text", text: JSON.stringify(metadata, null, 2) });
+    content.push({
+      type: "text",
+      text: `--- Extracted PDF text (${extracted.totalPages} page${extracted.totalPages === 1 ? "" : "s"})${truncated ? ", truncated" : ""} ---\n${body}`,
+    });
+  } else if (INLINE_IMAGE_MIMES.has(mime)) {
+    metadata.representation = "image";
+    content.push({ type: "text", text: JSON.stringify(metadata, null, 2) });
+    content.push({ type: "image", data: buffer.toString("base64"), mimeType: mime });
+  } else if (INLINE_OFFICE_MIMES.has(mime)) {
+    // Reuses the same zip-based text extraction get_assignment_files and
+    // get_announcement_files already rely on (attachment-reader.ts) rather
+    // than duplicating it here.
+    const text = officeDocumentText(buffer);
+    if (!text) {
+      metadata.representation = "office_text_extraction_failed";
+      metadata.note =
+        "No readable text found in this Office document. Re-run with an absolute downloadPath to save the raw file to disk.";
+      content.push({ type: "text", text: JSON.stringify(metadata, null, 2) });
+      return { content };
+    }
+    const { body, truncated } = truncateForInline(text, INLINE_TEXT_MAX_CHARS);
+    metadata.representation = "extracted_text";
+    metadata.truncated = truncated;
+    content.push({ type: "text", text: JSON.stringify(metadata, null, 2) });
+    content.push({ type: "text", text: `--- Extracted text (${effectiveFilename}) ---\n${body}` });
+  } else if (INLINE_TEXT_MIMES.has(mime)) {
+    const raw = buffer.toString("utf-8");
+    const { body, truncated } = truncateForInline(raw, INLINE_TEXT_MAX_CHARS);
+    metadata.representation = "text";
+    metadata.truncated = truncated;
+    content.push({ type: "text", text: JSON.stringify(metadata, null, 2) });
+    content.push({ type: "text", text: `--- File contents (${effectiveFilename}) ---\n${body}` });
+  } else {
+    // Binary formats we can't meaningfully show in the conversation (zip,
+    // legacy .doc/.ppt/.xls, video, audio, svg, ...). Emitting an
+    // EmbeddedResource here would put us back in the PDF-rejection failure
+    // mode described above, so this just points the caller at disk mode.
+    metadata.representation = "binary_description_only";
+    metadata.note = `This file type (${mime}) cannot be displayed inline. Re-run download_file with an absolute downloadPath to save it to disk instead.`;
+    content.push({ type: "text", text: JSON.stringify(metadata, null, 2) });
+  }
+
+  return { content };
+}
+
+/**
+ * Finish a download once the bytes are in hand: write to disk when
+ * `downloadPath` is given (unchanged response shape, plus a new `mode: "disk"`
+ * field), otherwise return the file inline in the tool response.
+ */
+async function finishDownload(
+  buffer: Buffer,
+  originalFilename: string,
+  downloadPath: string | undefined,
+  customFilename: string | undefined,
+  sourceLabel: string
+): Promise<CallToolResult> {
+  if (downloadPath === undefined) {
+    return respondInline(buffer, originalFilename, customFilename);
+  }
+
+  const effectiveFilename = customFilename || originalFilename;
+
+  // Use secureDownload for path traversal prevention, file type validation, and conflict resolution
+  const result = await secureDownload({
+    targetDir: downloadPath,
+    filename: effectiveFilename,
+    data: buffer,
+  });
+
+  log(
+    "INFO",
+    `${sourceLabel} downloaded successfully: ${result.path} (${result.size} bytes, ${result.mime})`
+  );
+
+  return toolResponse({
+    mode: "disk",
+    success: true,
+    filePath: result.path,
+    fileSize: result.size,
+    mimeType: result.mime,
+    originalFilename,
+    message: `File downloaded successfully to ${result.path}`,
+  });
+}
 
 /**
  * Register download_file tool
@@ -30,7 +229,7 @@ export function registerDownloadFile(
     {
       title: "Download File",
       description:
-        "Download a file from course content, assignment submissions, or an announcement's attachments to a local directory. Use this when the user wants to download, save, or get a file from Brightspace course content, dropbox submissions, or an announcement (newsId + fileId, from get_announcements). IMPORTANT: You MUST ask the user where they want to save the file before calling this tool. Never guess or assume a download directory. After identifying the file to download, suggest a clean readable filename to the user (e.g., 'Lecture 7 - Memory Management.pdf' instead of 'L07_CS251_2026SP_v2.pdf') and ask if they'd like to rename it. Pass their preferred name as customFilename, or omit it to keep the original. If a content-topic download fails because the file isn't released yet, the response explains why when Brightspace's module/topic metadata supports it (not yet open, ended, locked, or hidden).",
+        "Download a file from course content, assignment submissions, or an announcement's attachments. Use this when the user wants a file from Brightspace course content, dropbox submissions, or an announcement (newsId + fileId, from get_announcements). Two response modes: (1) INLINE (default — omit downloadPath): the file comes back directly in the tool response — extracted text for PDFs and Office documents, an image block for jpeg/png/gif/webp, or a short description for anything else — so it can be read immediately without touching any filesystem. This is the right choice in clients like Claude Desktop, whose analysis/sandbox tools cannot see a file the MCP server writes to its own host filesystem. (2) DISK (set downloadPath to an absolute path on the HOST filesystem the MCP server runs on): the file is saved there. Ask the user where to save it before using disk mode — never guess a directory. After identifying the file, suggest a clean readable filename (e.g., 'Lecture 7 - Memory Management.pdf' instead of 'L07_CS251_2026SP_v2.pdf') and pass it as customFilename, or omit it to keep the original. If a content-topic download fails because the file isn't released yet, the response explains why when Brightspace's module/topic metadata supports it (not yet open, ended, locked, or hidden).",
       inputSchema: DownloadFileSchema,
     },
     async (args: any) => {
@@ -44,28 +243,33 @@ export function registerDownloadFile(
         // Validate courseId
         validateContentId(courseId);
 
-        // Validate download path is absolute
-        if (!path.isAbsolute(downloadPath)) {
-          return errorResponse(
-            "Download path must be an absolute path (e.g., /Users/username/Downloads on Mac or C:\\Users\\username\\Downloads on Windows)"
-          );
-        }
+        // downloadPath is optional: omitting it means "return the file
+        // inline" (see respondInline), so there is nothing on the host
+        // filesystem to validate in that case.
+        if (downloadPath !== undefined) {
+          // Validate download path is absolute
+          if (!path.isAbsolute(downloadPath)) {
+            return errorResponse(
+              "Download path must be an absolute path (e.g., /Users/username/Downloads on Mac or C:\\Users\\username\\Downloads on Windows)"
+            );
+          }
 
-        // Validate download directory exists and is a directory
-        try {
-          const stats = await fs.stat(downloadPath);
-          if (!stats.isDirectory()) {
-            return errorResponse(
-              `Download path is not a directory: ${downloadPath}`
-            );
+          // Validate download directory exists and is a directory
+          try {
+            const stats = await fs.stat(downloadPath);
+            if (!stats.isDirectory()) {
+              return errorResponse(
+                `Download path is not a directory: ${downloadPath}`
+              );
+            }
+          } catch (error: any) {
+            if (error?.code === "ENOENT") {
+              return errorResponse(
+                `Download directory does not exist: ${downloadPath}`
+              );
+            }
+            throw error;
           }
-        } catch (error: any) {
-          if (error?.code === "ENOENT") {
-            return errorResponse(
-              `Download directory does not exist: ${downloadPath}`
-            );
-          }
-          throw error;
         }
 
         // Determine download source
@@ -149,7 +353,7 @@ async function downloadContentFile(
   apiClient: D2LApiClient,
   courseId: number,
   topicId: number,
-  downloadPath: string,
+  downloadPath: string | undefined,
   customFilename?: string
 ): Promise<any> {
   log(
@@ -200,30 +404,9 @@ async function downloadContentFile(
     );
   }
 
-  // Use custom filename if provided, otherwise use Content-Disposition filename
   const originalFilename = filename;
-  const effectiveFilename = customFilename || filename;
 
-  // Use secureDownload for path traversal prevention, file type validation, and conflict resolution
-  const result = await secureDownload({
-    targetDir: downloadPath,
-    filename: effectiveFilename,
-    data: buffer,
-  });
-
-  log(
-    "INFO",
-    `File downloaded successfully: ${result.path} (${result.size} bytes, ${result.mime})`
-  );
-
-  return toolResponse({
-    success: true,
-    filePath: result.path,
-    fileSize: result.size,
-    mimeType: result.mime,
-    originalFilename,
-    message: `File downloaded successfully to ${result.path}`,
-  });
+  return finishDownload(buffer, originalFilename, downloadPath, customFilename, "Content file");
 }
 
 /**
@@ -234,7 +417,7 @@ async function downloadSubmissionFile(
   courseId: number,
   folderId: number,
   fileId: number,
-  downloadPath: string,
+  downloadPath: string | undefined,
   customFilename?: string
 ): Promise<any> {
   log(
@@ -323,30 +506,9 @@ async function downloadSubmissionFile(
     );
   }
 
-  // Use custom filename if provided, otherwise use original submission filename
   const originalFilename = file.FileName;
-  const effectiveFilename = customFilename || file.FileName;
 
-  // Use secureDownload for path traversal prevention, file type validation, and conflict resolution
-  const result = await secureDownload({
-    targetDir: downloadPath,
-    filename: effectiveFilename,
-    data: buffer,
-  });
-
-  log(
-    "INFO",
-    `Submission file downloaded successfully: ${result.path} (${result.size} bytes, ${result.mime})`
-  );
-
-  return toolResponse({
-    success: true,
-    filePath: result.path,
-    fileSize: result.size,
-    mimeType: result.mime,
-    originalFilename,
-    message: `File downloaded successfully to ${result.path}`,
-  });
+  return finishDownload(buffer, originalFilename, downloadPath, customFilename, "Submission file");
 }
 
 /**
@@ -357,7 +519,7 @@ async function downloadNewsAttachment(
   courseId: number,
   newsId: number,
   fileId: number,
-  downloadPath: string,
+  downloadPath: string | undefined,
   customFilename?: string
 ): Promise<any> {
   log(
@@ -423,26 +585,6 @@ async function downloadNewsAttachment(
   }
 
   const originalFilename = filename;
-  const effectiveFilename = customFilename || filename;
 
-  // Use secureDownload for path traversal prevention, file type validation, and conflict resolution
-  const result = await secureDownload({
-    targetDir: downloadPath,
-    filename: effectiveFilename,
-    data: buffer,
-  });
-
-  log(
-    "INFO",
-    `Announcement attachment downloaded successfully: ${result.path} (${result.size} bytes, ${result.mime})`
-  );
-
-  return toolResponse({
-    success: true,
-    filePath: result.path,
-    fileSize: result.size,
-    mimeType: result.mime,
-    originalFilename,
-    message: `File downloaded successfully to ${result.path}`,
-  });
+  return finishDownload(buffer, originalFilename, downloadPath, customFilename, "Announcement attachment");
 }

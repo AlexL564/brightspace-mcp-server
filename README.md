@@ -232,7 +232,7 @@ shared machine.
 | Rubrics | "What does the rubric for Lab 4 actually want?" · "Why did I lose points on the analysis criterion?" — `get_assignment_rubric` returns the full criteria groups, levels, and point values for a dropbox assignment, plus your own graded outcome per criterion when the tenant exposes it |
 | Exams | "Is there a midterm in the gradebook that isn't on my assignments list?" |
 | Announcements | "Did any professor post something important today?" · "What did my CS prof announce this week?" · "Any announcements since last Monday?" · "Read the file attached to today's announcement" · "Save the rubric my prof attached to that announcement" |
-| Course content | "Find the midterm review slides" · "Download every PDF from Module 5" · "What's new in this course since I last checked?" |
+| Course content | "Find the midterm review slides" · "Download every PDF from Module 5" · "What's new in this course since I last checked?" — or just read it inline instead of saving it |
 | Roster | "Who are the TAs for ECE 264?" · "Get me my instructor's email" |
 | Groups | "Who is in my project group?" · "List my lab group members for this course" |
 | Discussions | "What are people saying in the final project thread?" · "Summarize the latest discussion posts" |
