@@ -142,6 +142,19 @@ These sixteen are the whole surface. An available-update notice, when there is o
 
 `get_server_info`'s `requests` field is `D2LApiClient.stats()`: `statusClasses` (counts for `2xx`/`401`/`403`/`404`/`429`/`5xx`, plus `other` for anything outside that list), `networkErrors`, `cacheHits`/`cacheMisses`, `coalescedJoins`, and `tokenRefreshes`. It is a snapshot of this process only (resets on restart), additive to the existing fields, and never carries a URL, username, or token. `coalescedJoins` comes from request coalescing in `D2LApiClient.get()`: a GET already in flight for the same unresolved path is joined instead of issuing a second fetch, which matters because Claude Desktop fans out tool calls in parallel and the tools themselves fan out per course. A TTL'd call that joins an in-flight request for the same path counts as both a cache miss (it wasn't served from the cache) and a coalesced join (it didn't issue its own fetch) -- the two counters overlap rather than partition the calls.
 
+### Available prompts
+
+Registered in `src/prompts/index.ts` (one file per prompt, same shape as `src/tools/`). A client that
+shows server-provided prompts in a picker (e.g. Claude Desktop) surfaces these as one-click starting
+points; each renders a single user message that names the tools above by their real names:
+
+| Prompt | Arguments | What it does |
+|--------|-----------|--------------|
+| `weekly_briefing` | none | 7-day briefing of due dates, new announcements, and grade changes across all courses |
+| `grade_audit` | `courseId` (optional) | Analyzes grades for one course, or all of them, flagging missing/low items |
+| `study_planner` | `daysAhead` (optional, default 7) | Plans study time from upcoming due dates and calendar events |
+| `course_summary` | `courseId` (required) | Syllabus, content outline, assignments, and grades for one course |
+
 `get_video_transcript` takes courseId+topicId (from `get_course_content`) or a direct videoUrl, and pages long transcripts via offset/maxChars the same way `get_assignment_files` pages extracted text. It supports Kaltura (e.g. Purdue's BoilerCast) via an anonymous widget session against the Kaltura API — no Brightspace session is needed or used — and YouTube via its public timedtext endpoint. Panopto, YuJa, Echo360, and Vimeo are detected but not yet implemented: the tool names the platform and says so rather than returning an empty result. A video with no caption track also returns `hasTranscript: false` with an explanation, not an error.
 
 Quiz attempt counts are unavailable to students on the Purdue tenant: `/quizzes/{id}/attempts/` answers 403. Those quizzes carry `attemptsAvailable: false` with null counts rather than a fabricated zero.
@@ -168,6 +181,12 @@ src/
     download-file.ts        Binary download + file-type detection
     content-availability.ts Shared release-window logic (hidden/locked/not_yet_open/ended)
     topic-availability.ts   Explains a download_file failure using topic/TOC availability metadata
+  prompts/
+    index.ts                Prompt registry
+    weekly-briefing.ts      weekly_briefing prompt
+    grade-audit.ts          grade_audit prompt
+    study-planner.ts        study_planner prompt
+    course-summary.ts       course_summary prompt
   api/
     client.ts               HTTP client wrapping the Valence/D2L API. lp()/le()
                             leave the version as a {lp}/{le} placeholder that
