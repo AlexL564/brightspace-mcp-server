@@ -610,7 +610,7 @@ describe("fetchCourseAssignments submissionStatus", () => {
 
     expect(assignment.submissionStatus).toBe("unknown");
     expect(assignment.submission).toBeNull();
-    expect(assignment.submissionStatusNote).toMatch(/denied access/);
+    expect(assignment.submissionStatusNote).toMatch(/did not return this assignment's submission list/);
   });
 });
 
@@ -633,7 +633,7 @@ describe("fetchCourseAssignments attemptStatus", () => {
 
     expect(quiz.attemptStatus).toBe("unknown");
     expect(quiz.attemptsUsed).toBeNull();
-    expect(quiz.attemptStatusNote).toMatch(/denied access/);
+    expect(quiz.attemptStatusNote).toMatch(/did not provide this quiz's attempt data/);
   });
 
   it("marks attempts known once the endpoint answers, even with zero completed attempts", async () => {

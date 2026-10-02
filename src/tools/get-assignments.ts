@@ -368,7 +368,7 @@ export async function fetchCourseAssignments(
             : "not_submitted",
         ...(submissionsKnown ? {} : {
           submissionStatusNote:
-            "Brightspace denied access to this assignment's submission list, so whether it was submitted " +
+            "Brightspace did not return this assignment's submission list, so whether it was submitted " +
             "is unknown. Do not report it as missing or unsubmitted - tell the user to check Brightspace directly.",
         }),
         submission: submissions.length > 0
@@ -510,7 +510,7 @@ export async function fetchCourseAssignments(
         attemptStatus: completedAttempts !== null ? "known" : "unknown",
         ...(completedAttempts !== null ? {} : {
           attemptStatusNote:
-            "Brightspace denied access to this quiz's attempts, so it is unknown whether it was taken. " +
+            "Brightspace did not provide this quiz's attempt data, so it is unknown whether it was taken. " +
             "Do not report it as not attempted.",
         }),
         attemptsUsed: completedAttempts?.length ?? null,

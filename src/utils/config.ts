@@ -36,7 +36,9 @@ export async function loadConfig(): Promise<AppConfig> {
     console.error("[config] Loaded base config from ~/.brightspace-mcp/config.json");
   } else if (storeLoadError) {
     console.error(
-      `[config] WARN: Failed to read ${getConfigStorePath()} (${(storeLoadError as Error).message}); ` +
+      `[config] WARN: Failed to read ${getConfigStorePath()} (${
+        storeLoadError instanceof Error ? storeLoadError.message : String(storeLoadError)
+      }); ` +
       "continuing with environment variables only."
     );
   } else {
