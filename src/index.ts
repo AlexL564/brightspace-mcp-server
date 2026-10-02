@@ -24,6 +24,7 @@ import {
   registerGetMyGrades,
   registerGetAnnouncements,
   registerGetAssignments,
+  registerGetAssignmentRubric,
   registerGetAssignmentFiles,
   registerGetAnnouncementFiles,
   registerGetCourseContent,
@@ -158,6 +159,7 @@ if (subcommand === 'setup') {
       registerGetMyGrades(server, apiClient, config);
       registerGetAnnouncements(server, apiClient, config);
       registerGetAssignments(server, apiClient, config);
+      registerGetAssignmentRubric(server, apiClient);
       registerGetAssignmentFiles(server, apiClient, config.baseUrl);
       registerGetAnnouncementFiles(server, apiClient);
       registerGetCourseContent(server, apiClient);
@@ -169,7 +171,7 @@ if (subcommand === 'setup') {
       registerGetDiscussions(server, apiClient);
       registerGetVideoTranscript(server, apiClient);
       registerGetServerInfo(server, config, PKG_VERSION, apiClient);
-      log("DEBUG", "MCP tools registered (17 tools)");
+      log("DEBUG", "MCP tools registered (18 tools)");
 
       // Register MCP prompts — surfaced in clients (e.g. Claude Desktop) as a
       // picker, distinct from tools. Each one is a canned user message that
@@ -185,7 +187,7 @@ if (subcommand === 'setup') {
       const transport = new StdioServerTransport();
       await server.connect(transport);
 
-      log("INFO", "Brightspace MCP Server by Rohan Muppa — running on stdio (17 tools, 4 prompts registered)");
+      log("INFO", "Brightspace MCP Server by Rohan Muppa — running on stdio (18 tools, 4 prompts registered)");
       log("INFO", "Setup: see README.md for MCP client configuration (Claude Desktop, ChatGPT Desktop, Cursor, etc.)");
     } catch (error) {
       log("ERROR", "MCP Server failed to start", error);

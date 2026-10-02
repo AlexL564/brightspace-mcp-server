@@ -124,6 +124,7 @@ Registered in `src/tools/index.ts`, schemas in `src/tools/schemas.ts`:
 | `get_my_courses` | List enrolled courses |
 | `get_my_grades` | Grades for a course or all courses |
 | `get_assignments` | Assignments with due dates and submission status |
+| `get_assignment_rubric` | Full rubric table (criteria groups, levels, points, descriptions) for a dropbox assignment, plus the student's own graded outcome per criterion when the tenant exposes it |
 | `get_upcoming_due_dates` | Due dates across all courses within a window |
 | `get_calendar_events` | Course calendar events (exams, labs, schedule changes, hand-made deadlines) in a window, default the next 7 days |
 | `get_announcements` | Recent course announcements, with each one's attached files (`attachments`) |
@@ -139,7 +140,7 @@ Registered in `src/tools/index.ts`, schemas in `src/tools/schemas.ts`:
 | `get_video_transcript` | Transcript of a video embedded in course content (Kaltura, YouTube), with timestamps |
 | `get_server_info` | Running version, Node runtime, platform, config and session paths, school URL, whether a credential is stored, the server's local timezone and UTC offset (`localTimezone`, `utcOffsetMinutes`), `signedInAs` (`uniqueName`/`displayName`) once known, `microsoftSession` (what Microsoft remembered) once a browser sign-in is saved, and `requests` (lightweight API client counters) — no network call, no secrets |
 
-These seventeen are the whole surface. An available-update notice, when there is one, rides along as a second text block on the first successful result.
+These eighteen are the whole surface. An available-update notice, when there is one, rides along as a second text block on the first successful result.
 
 `get_server_info`'s `requests` field is `D2LApiClient.stats()`: `statusClasses` (counts for `2xx`/`401`/`403`/`404`/`429`/`5xx`, plus `other` for anything outside that list), `networkErrors`, `cacheHits`/`cacheMisses`, `coalescedJoins`, and `tokenRefreshes`. It is a snapshot of this process only (resets on restart), additive to the existing fields, and never carries a URL, username, or token. `coalescedJoins` comes from request coalescing in `D2LApiClient.get()`: a GET already in flight for the same unresolved path is joined instead of issuing a second fetch, which matters because Claude Desktop fans out tool calls in parallel and the tools themselves fan out per course. A TTL'd call that joins an in-flight request for the same path counts as both a cache miss (it wasn't served from the cache) and a coalesced join (it didn't issue its own fetch) -- the two counters overlap rather than partition the calls.
 
@@ -161,6 +162,8 @@ points; each renders a single user message that names the tools above by their r
 Quiz attempt counts are unavailable to students on the Purdue tenant: `/quizzes/{id}/attempts/` answers 403. Those quizzes carry `attemptsAvailable: false` with null counts rather than a fabricated zero.
 
 Assignments, quizzes, and due dates each carry a `url` field that deep-links into Brightspace. `get_assignments` also returns `gradeOnly` items for gradebook columns that match no assignment or quiz, such as a proctored exam. `get_upcoming_due_dates` reads `DueDate` from assignments, `DueDate ?? EndDate` from quizzes,, `DueDate` from discussion topics (`type: "discussion"`), and each course's calendar events (`type: "event"`, `dueDate` = the event's start, plus `endDate` and `location` when set). A topic with no `DueDate` is an ungraded forum and is excluded. Brightspace generates a calendar event for every dated assignment, quiz, and discussion; an event generated from an item already in the list is dropped, so each deadline appears once, while hand-made events (exams, labs) always stay.
+
+`get_assignment_rubric` takes `courseId` and `assignmentId` (the dropbox folder id `get_assignments` already returns). It reads the folder's embedded `Assessment.Rubrics` first, falling back to the `/rubrics?objectType=Dropbox&objectId=` listing when a tenant omits them there. The student's own graded outcome is read from the same `myFeedback` route `get_assignments` already calls — never the unstable per-assessment rubric route — and is merged in per criterion when the tenant exposes it. A folder that 403s or 404s, or carries no rubric at all, answers `{ rubrics: [], note }` rather than an error.
 
 Every `dueDate`/`DueDate`-style field in `get_assignments` and `get_upcoming_due_dates` carries an additive `dueIn` string next to it — a relative rendering ("in 3 days", "yesterday", "in 2 hours") computed with `Intl.RelativeTimeFormat`, so a caller never has to do its own date math against the raw ISO timestamp. `dueIn` is `null` wherever the due date itself is `null` (e.g. a `gradeOnly` row) or unparseable; `dueDate`/`DueDate` is never modified.
 
