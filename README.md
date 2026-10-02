@@ -180,6 +180,10 @@ If this is a Docker or other headless setup with no `~/.brightspace-mcp/config.j
 
 **The catch:** neither one renews itself. A pasted session cookie dies at D2L's own idle timeout (the same timeout that would eventually log you out in a browser), and a pre-issued token dies whenever it expires or is revoked. When that happens the server does **not** fall back to a browser login — it answers with an error telling you to paste a fresh value. There's no in-between: this is a deliberate escape hatch for environments that can't run a browser at all, not a way to skip typing your password once.
 
+## Something not working?
+
+- Run `npx -y brightspace-mcp-server@latest doctor` first — it checks your Node version, saved setup, credential store, Brightspace connectivity, saved sign-in, and installed version, and tells you exactly what to fix.
+
 ## Troubleshooting
 
 **Where to find logs:** MCP clients log the server's stderr themselves. On **macOS**, Claude Desktop writes to `~/Library/Logs/Claude/mcp*.log` (one file per server, plus `mcp.log` for the client itself). On **Windows**, it's `%APPDATA%\Claude\logs`. Other clients vary — check their own logs or output panel for the `brightspace-mcp-server` process.
