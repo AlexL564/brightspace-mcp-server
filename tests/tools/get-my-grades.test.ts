@@ -182,7 +182,7 @@ describe("get_my_grades while sign-in is pending", () => {
         return { Items: [{ OrgUnit: COURSE_A, Access: { IsActive: true } }, { OrgUnit: COURSE_B, Access: { IsActive: true } }] };
       }
       if (path.includes(`/${COURSE_B.Id}/grades/`)) {
-        return Object.assign(new Error("Forbidden"), { status: 403 });
+        throw new ApiError(403, path, "Forbidden");
       }
       return [grade("Exam 1")];
     });

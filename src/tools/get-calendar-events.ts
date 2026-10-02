@@ -7,7 +7,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { D2LApiClient } from "../api/index.js";
 import { GetCalendarEventsSchema } from "./schemas.js";
-import { toolResponse, errorResponse, sanitizeError, isAuthUnavailable, authPendingNotice } from "./tool-helpers.js";
+import { toolResponse, toolResponseWithNotice, errorResponse, sanitizeError, isAuthUnavailable, authPendingNotice } from "./tool-helpers.js";
 import { log } from "../utils/logger.js";
 import { resolveCourses } from "./resolve-courses.js";
 import { fetchCourseCalendarEvents } from "./calendar-events.js";
@@ -84,22 +84,19 @@ export function registerGetCalendarEvents(
           (pendingCourseIds.length > 0 ? ` (${pendingCourseIds.length} pending sign-in)` : "")
         );
 
-        // The normal response is a bare array. authPending only fits on an
-        // object, so a pending course is the one case where this switches to
-        // an object instead — existing callers reading a plain list keep
-        // getting one whenever sign-in isn't the problem.
+        // The response is always a bare array, pending sign-in or not — a
+        // shape change would break every existing caller. A pending course
+        // instead adds a second content block carrying the notice, which
+        // names which course ids are unavailable.
         if (pendingCourseIds.length === 0) {
           return toolResponse(events);
         }
-        return toolResponse({
+        return toolResponseWithNotice(
           events,
-          authPending: true,
-          unavailableCourseIds: pendingCourseIds,
-          notice:
-            "Sign-in to Brightspace is still in progress, so calendar events for " +
+          "Sign-in to Brightspace is still in progress, so calendar events for " +
             `${pendingCourseIds.length} course(s) (${pendingCourseIds.join(", ")}) could not be fetched ` +
-            `yet. ${authPendingNotice(firstAuthError)} Call get_calendar_events again once sign-in finishes.`,
-        });
+            `yet. ${authPendingNotice(firstAuthError)} Call get_calendar_events again once sign-in finishes.`
+        );
       } catch (error) {
         return sanitizeError(error);
       }

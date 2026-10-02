@@ -42,6 +42,23 @@ export function toolResponse(data: unknown): CallToolResult {
 }
 
 /**
+ * Wrap data as an MCP-compatible tool result, with a notice appended as a
+ * second content block.
+ *
+ * Some callers already depend on content[0] being a specific shape (a bare
+ * array, for instance) and must not see that shape change just because there
+ * is something to tell the user — a pending sign-in, say. This keeps
+ * content[0] exactly what toolResponse(data) alone would have produced and
+ * puts `notice` in content[1], ahead of (and separate from) any update notice
+ * toolResponse would itself append.
+ */
+export function toolResponseWithNotice(data: unknown, notice: string): CallToolResult {
+  const result = toolResponse(data);
+  result.content.push({ type: "text", text: notice });
+  return result;
+}
+
+/**
  * Wrap error message as MCP-compatible tool result
  */
 export function errorResponse(message: string): CallToolResult {

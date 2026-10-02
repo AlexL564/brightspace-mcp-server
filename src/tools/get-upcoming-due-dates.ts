@@ -9,7 +9,7 @@ import { D2LApiClient, DEFAULT_CACHE_TTLS } from "../api/index.js";
 import {
   GetUpcomingDueDatesSchema,
 } from "./schemas.js";
-import { toolResponse, sanitizeError, isAuthUnavailable, authPendingNotice } from "./tool-helpers.js";
+import { toolResponse, toolResponseWithNotice, sanitizeError, isAuthUnavailable, authPendingNotice } from "./tool-helpers.js";
 import { log } from "../utils/logger.js";
 import { assignmentUrl, quizUrl, discussionUrl } from "../utils/deep-links.js";
 import { dueIn } from "../utils/due-in.js";
@@ -318,22 +318,19 @@ export function registerGetUpcomingDueDates(
           (pendingCourseIds.length > 0 ? ` (${pendingCourseIds.length} pending sign-in)` : "")
         );
 
-        // The normal response is a bare array. authPending only fits on an
-        // object, so a pending course is the one case where this switches to
-        // an object instead — existing callers reading a plain list keep
-        // getting one whenever sign-in isn't the problem.
+        // The response is always a bare array, pending sign-in or not — a
+        // shape change would break every existing caller. A pending course
+        // instead adds a second content block carrying the notice, which
+        // names which course ids are unavailable.
         if (pendingCourseIds.length === 0) {
           return toolResponse(upcoming);
         }
-        return toolResponse({
-          items: upcoming,
-          authPending: true,
-          unavailableCourseIds: pendingCourseIds,
-          notice:
-            "Sign-in to Brightspace is still in progress, so upcoming due dates for " +
+        return toolResponseWithNotice(
+          upcoming,
+          "Sign-in to Brightspace is still in progress, so upcoming due dates for " +
             `${pendingCourseIds.length} course(s) (${pendingCourseIds.join(", ")}) could not be fetched ` +
-            `yet. ${authPendingNotice(firstAuthError)} Call get_upcoming_due_dates again once sign-in finishes.`,
-        });
+            `yet. ${authPendingNotice(firstAuthError)} Call get_upcoming_due_dates again once sign-in finishes.`
+        );
       } catch (error) {
         return sanitizeError(error);
       }

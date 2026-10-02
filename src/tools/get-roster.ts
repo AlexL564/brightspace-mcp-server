@@ -91,6 +91,7 @@ export function registerGetRoster(
 
         try {
           const allUsers: ClasslistUser[] = [];
+          let authFailure: PromiseRejectedResult | undefined;
 
           if (!includeStudents) {
             // Fetch instructors and TAs in parallel
@@ -105,16 +106,17 @@ export function registerGetRoster(
               }),
             ]);
 
-            // A pending sign-in means neither route can be trusted to have
+            // A pending sign-in means that route can't be trusted to have
             // actually asked Brightspace anything — unlike a role group that
-            // is genuinely empty, which is a real measurement. Surface it
-            // rather than quietly reporting half (or none) of the roster as
-            // if that were the whole answer.
-            for (const result of [instructorResult, taResult]) {
-              if (result.status === "rejected" && isAuthUnavailable(result.reason)) {
-                throw result.reason;
-              }
-            }
+            // is genuinely empty, which is a real measurement. Note it rather
+            // than quietly reporting half the roster as the whole answer, but
+            // keep whichever route *did* answer instead of discarding it: a
+            // roster that lost its TAs to a pending sign-in should still show
+            // the instructor it already has.
+            authFailure = [instructorResult, taResult].find(
+              (r): r is PromiseRejectedResult =>
+                r.status === "rejected" && isAuthUnavailable(r.reason)
+            );
 
             // Merge results
             if (instructorResult.status === "fulfilled") {
@@ -161,7 +163,11 @@ export function registerGetRoster(
             role: user.ClasslistRoleDisplayName,
           }));
 
-          log("INFO", `get_roster: Retrieved ${users.length} users for course ${courseId}`);
+          log(
+            "INFO",
+            `get_roster: Retrieved ${users.length} users for course ${courseId}` +
+              (authFailure ? " (sign-in pending for one route)" : "")
+          );
           return toolResponse({
             courseId,
             total,
@@ -171,6 +177,15 @@ export function registerGetRoster(
               ? { note: `Showing ${users.length} of ${total}. Raise the limit argument to see more.` }
               : {}),
             users,
+            ...(authFailure
+              ? {
+                  authPending: true,
+                  notice:
+                    "Sign-in to Brightspace is still in progress, so part of the roster for this " +
+                    `course could not be fetched yet. ${authPendingNotice(authFailure.reason)} Call ` +
+                    "get_roster again once sign-in finishes.",
+                }
+              : {}),
           });
         } catch (error) {
           // A pending sign-in is not an empty roster: the route never

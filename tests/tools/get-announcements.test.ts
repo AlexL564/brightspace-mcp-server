@@ -491,11 +491,12 @@ describe("get_announcements attachments", () => {
 
 /**
  * A sign-in that has not finished is not an empty course. CLAUDE.md forbids
- * turning a previously successful response into an error, so the tool keeps
- * a success envelope and adds an explicit authPending/notice pair a caller
- * can check instead. authPending only fits on an object, so it is the one
- * case where the bare-array shape switches to the object shape modifiedSince
- * already uses.
+ * turning a previously successful response into an error. Without
+ * modifiedSince the response is always a bare array — changing content[0]'s
+ * shape would break every existing caller — so the authPending notice lands
+ * in a second content block instead. With modifiedSince the response is
+ * already an object, and authPending/unavailableCourseIds/notice join the
+ * rest of that JSON.
  */
 
 import { AuthProcessError } from "../../src/auth/auth-runner.js";
@@ -503,6 +504,7 @@ import { ApiError } from "../../src/api/errors.js";
 
 const mfaPending = () => new AuthProcessError("mfaPending", "MFA approval pending");
 const body = (result: any): any => JSON.parse(result.content[0].text);
+const notice = (result: any): string => result.content[1].text;
 
 describe("get_announcements while sign-in is pending", () => {
   it("reports authPending for a single course instead of an empty list read as success", async () => {
@@ -513,9 +515,9 @@ describe("get_announcements while sign-in is pending", () => {
     const result = await call({ courseId: COURSE_A.Id });
 
     expect(result.isError).toBeUndefined();
-    const parsed = body(result);
-    expect(parsed).toMatchObject({ announcements: [], authPending: true });
-    expect(parsed.notice).toContain("Approve the sign-in request");
+    expect(Array.isArray(body(result))).toBe(true);
+    expect(body(result)).toEqual([]);
+    expect(notice(result)).toContain("Approve the sign-in request");
   });
 
   it("reports authPending when the news route is rejected with 401", async () => {
@@ -526,9 +528,9 @@ describe("get_announcements while sign-in is pending", () => {
     const result = await call({ courseId: COURSE_A.Id });
 
     expect(result.isError).toBeUndefined();
-    const parsed = body(result);
-    expect(parsed).toMatchObject({ announcements: [], authPending: true });
-    expect(parsed.notice).toContain("Authentication expired");
+    expect(Array.isArray(body(result))).toBe(true);
+    expect(body(result)).toEqual([]);
+    expect(notice(result)).toContain("Authentication expired");
   });
 
   it("keeps the courses that answered when only one course's sign-in is pending", async () => {
@@ -542,10 +544,10 @@ describe("get_announcements while sign-in is pending", () => {
 
     expect(result.isError).toBeUndefined();
     const parsed = body(result);
-    expect(parsed.authPending).toBe(true);
-    expect(parsed.unavailableCourseIds).toEqual([COURSE_B.Id]);
-    expect(parsed.announcements).toHaveLength(1);
-    expect(parsed.announcements[0].courseId).toBe(COURSE_A.Id);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].courseId).toBe(COURSE_A.Id);
+    expect(notice(result)).toContain(String(COURSE_B.Id));
   });
 
   it("still returns a bare array when the only failure is non-auth", async () => {

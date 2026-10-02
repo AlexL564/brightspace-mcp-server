@@ -282,15 +282,15 @@ describe("get_calendar_events", () => {
 /**
  * A sign-in that has not finished is not an empty calendar. CLAUDE.md forbids
  * turning a previously successful response into an error, so the tool keeps
- * a success envelope and adds an explicit authPending/notice pair a caller
- * can check instead. authPending only fits on an object, so it is the one
- * case where the bare-array shape switches to an object instead.
+ * the bare-array shape it always returns and adds the authPending notice as a
+ * second content block instead of changing content[0]'s shape.
  */
 
 import { AuthProcessError } from "../../src/auth/auth-runner.js";
 import { ApiError } from "../../src/api/errors.js";
 
 const mfaPending = () => new AuthProcessError("mfaPending", "MFA approval pending");
+const notice = (result: any): string => result.content[1].text;
 
 describe("get_calendar_events while sign-in is pending", () => {
   beforeEach(() => {
@@ -311,9 +311,10 @@ describe("get_calendar_events while sign-in is pending", () => {
     const result = await call({ courseId: COURSE_A.Id });
 
     expect(result.isError).toBeUndefined();
-    const parsed = parse(result);
-    expect(parsed).toMatchObject({ events: [], authPending: true, unavailableCourseIds: [COURSE_A.Id] });
-    expect(parsed.notice).toContain("Approve the sign-in request");
+    expect(Array.isArray(parse(result))).toBe(true);
+    expect(parse(result)).toEqual([]);
+    expect(notice(result)).toContain(String(COURSE_A.Id));
+    expect(notice(result)).toContain("Approve the sign-in request");
   });
 
   it("reports authPending when the calendar route is rejected with 401", async () => {
@@ -326,9 +327,8 @@ describe("get_calendar_events while sign-in is pending", () => {
     const result = await call({ courseId: COURSE_A.Id });
 
     expect(result.isError).toBeUndefined();
-    const parsed = parse(result);
-    expect(parsed.authPending).toBe(true);
-    expect(parsed.notice).toContain("Authentication expired");
+    expect(Array.isArray(parse(result))).toBe(true);
+    expect(notice(result)).toContain("Authentication expired");
   });
 
   it("keeps the other course's events when only one course's sign-in is pending", async () => {
@@ -343,9 +343,9 @@ describe("get_calendar_events while sign-in is pending", () => {
 
     expect(result.isError).toBeUndefined();
     const parsed = parse(result);
-    expect(parsed.authPending).toBe(true);
-    expect(parsed.unavailableCourseIds).toEqual([COURSE_B.Id]);
-    expect(parsed.events.map((e: any) => e.title)).toEqual(["Lab"]);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed.map((e: any) => e.title)).toEqual(["Lab"]);
+    expect(notice(result)).toContain(String(COURSE_B.Id));
   });
 
   it("still returns a bare array when the only failure is non-auth", async () => {

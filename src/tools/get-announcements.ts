@@ -10,7 +10,7 @@ import { fetchAllItems } from "../api/paginate.js";
 import {
   GetAnnouncementsSchema,
 } from "./schemas.js";
-import { toolResponse, sanitizeError, isAuthUnavailable, authPendingNotice } from "./tool-helpers.js";
+import { toolResponse, toolResponseWithNotice, sanitizeError, isAuthUnavailable, authPendingNotice } from "./tool-helpers.js";
 import { log } from "../utils/logger.js";
 import { applyCourseFilter } from "../utils/course-filter.js";
 import { matchesModifiedSince } from "../utils/modified-since.js";
@@ -178,24 +178,30 @@ export function registerGetAnnouncements(
           } catch (error) {
             // A pending sign-in is not an empty course: the route never
             // answered, so the result says so instead of reporting zero
-            // announcements as if that were a real measurement. authPending
-            // only fits on an object, so this is the one case where a
-            // single-course call switches from the bare array it normally
-            // returns to the object shape modifiedSince already uses —
-            // existing callers that pass modifiedSince see no change at all,
-            // and a caller that reads `.announcements` off the object works
-            // either way.
+            // announcements as if that were a real measurement.
             if (isAuthUnavailable(error)) {
               log("DEBUG", `get_announcements: sign-in pending for course ${courseId}`, error);
-              return toolResponse({
-                announcements: [],
-                ...(modifiedSince ? { modifiedSince, returned: 0, filteredOut: 0 } : {}),
-                authPending: true,
-                notice:
-                  "Sign-in to Brightspace is still in progress, so announcements for this course " +
-                  `could not be fetched yet. ${authPendingNotice(error)} Call get_announcements again ` +
-                  "once sign-in finishes.",
-              });
+              const notice =
+                "Sign-in to Brightspace is still in progress, so announcements for this course " +
+                `could not be fetched yet. ${authPendingNotice(error)} Call get_announcements again ` +
+                "once sign-in finishes.";
+              // With modifiedSince the response is already an object (that is
+              // the shape those callers already get), so authPending/notice
+              // join the rest of the JSON there. Without it the response is
+              // always a bare array — a shape change would break every
+              // existing caller — so the empty array stays content[0] and the
+              // notice becomes a second content block instead.
+              if (modifiedSince) {
+                return toolResponse({
+                  announcements: [],
+                  modifiedSince,
+                  returned: 0,
+                  filteredOut: 0,
+                  authPending: true,
+                  notice,
+                });
+              }
+              return toolResponseWithNotice([], notice);
             }
             throw error;
           }
@@ -299,17 +305,29 @@ export function registerGetAnnouncements(
           `across ${enrollmentItems.length} courses${pending.length > 0 ? `, ${pending.length} pending sign-in` : ""})`
         );
 
-        // authPending only fits on an object, so a pending course is the one
-        // case where the all-courses call switches from the bare array it
-        // normally returns to the object shape modifiedSince already uses.
-        const response: Record<string, unknown> = modifiedSince
-          ? {
-              announcements,
-              modifiedSince,
-              returned: announcements.length,
-              filteredOut: allAnnouncements.length - allMatched.length,
-            }
-          : { announcements };
+        // With modifiedSince the response is already an object (the shape
+        // those callers already get), so authPending/unavailableCourseIds/
+        // notice join the rest of the JSON there. Without it the response is
+        // always a bare array — a shape change would break every existing
+        // caller — so a pending course adds a second content block carrying
+        // the notice instead of changing content[0].
+        if (!modifiedSince) {
+          if (pending.length === 0) return toolResponse(announcements);
+          return toolResponseWithNotice(
+            announcements,
+            "Sign-in to Brightspace is still in progress, so announcements for " +
+              `${pending.length} course(s) (${pending.map((c) => c.courseId).join(", ")}) could not be ` +
+              `fetched yet. ${authPendingNotice(pending[0].authError)} Call get_announcements again once ` +
+              "sign-in finishes."
+          );
+        }
+
+        const response: Record<string, unknown> = {
+          announcements,
+          modifiedSince,
+          returned: announcements.length,
+          filteredOut: allAnnouncements.length - allMatched.length,
+        };
         if (pending.length > 0) {
           response.authPending = true;
           response.unavailableCourseIds = pending.map((c) => c.courseId);
@@ -318,9 +336,8 @@ export function registerGetAnnouncements(
             `${pending.length} course(s) (${pending.map((c) => c.courseId).join(", ")}) could not be ` +
             `fetched yet. ${authPendingNotice(pending[0].authError)} Call get_announcements again once ` +
             "sign-in finishes.";
-          return toolResponse(response);
         }
-        return toolResponse(modifiedSince ? response : announcements);
+        return toolResponse(response);
       } catch (error) {
         return sanitizeError(error);
       }

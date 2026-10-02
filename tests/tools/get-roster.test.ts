@@ -128,7 +128,7 @@ describe("get_roster while sign-in is pending", () => {
     expect(parsed.notice).toContain("Approve the sign-in request");
   });
 
-  it("reports authPending when only the TA route is rejected with 401", async () => {
+  it("reports authPending when only the TA route is rejected with 401, keeping the instructor that did answer", async () => {
     const { call } = setup((path) => {
       if (path.includes("roleId=135")) throw new ApiError(401, path, "expired");
       return { Objects: [user("prof")], Next: null };
@@ -138,7 +138,8 @@ describe("get_roster while sign-in is pending", () => {
 
     expect(result.isError).toBeUndefined();
     const parsed = parse(result);
-    expect(parsed).toMatchObject({ courseId: COURSE_ID, users: [], authPending: true });
+    expect(parsed).toMatchObject({ courseId: COURSE_ID, authPending: true });
+    expect(parsed.users.map((u: any) => u.name)).toEqual(["prof"]);
     expect(parsed.notice).toContain("Authentication expired");
   });
 
