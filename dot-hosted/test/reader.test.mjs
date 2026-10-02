@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import vm from 'node:vm';
 import { createWorker, callTool, readConnection, writeConnection, SCOPES, TOOLS } from '../worker/index.js';
 
 // Synthetic tokens and course records only. This suite makes no network calls.
@@ -254,5 +255,65 @@ test('JWT metadata can shorten the temporary limit but cannot extend it',async()
     const before=Date.now();const exp=Math.floor(before/1000)+seconds;const token='mock.'+Buffer.from(JSON.stringify({exp})).toString('base64url')+'.mock';
     assert.equal((await worker.fetch(request('/api/session/complete',{method:'POST',data:{nonce,token,consent:true}}),e)).status,200);
     const saved=await readConnection(e,'alice');assert.ok(saved.value.expiresAt<=Math.min(before+3600100,exp*1000));
+  }
+});
+
+test('expired or rejected session status preserves only the non-secret reconnection reason',async()=>{
+  for(const reason of ['expired','rejected']){
+    const e=env();await writeConnection(e,'alice',connection({mode:'session',refreshToken:undefined,expiresAt:reason==='expired'?0:Date.now()+3600000}));
+    const f=fixture(()=>response({privateDetail:'mock-secret'},401));const worker=createWorker(f.fetch);
+    if(reason==='rejected')await assert.rejects(callTool(e,'alice','get_my_courses',{},f.fetch));
+    const status=await (await worker.fetch(request('/api/status'),e)).json();
+    assert.equal(status.connected,false);assert.equal(status.reconnectReason,reason);assert.equal(status.expired,reason==='expired');
+    assert.equal(status.expiresAt,null);assert.deepEqual(status.selectedCourseIds,[]);
+    assert.ok(!JSON.stringify(status).includes('mock-access-alice'));assert.ok(!JSON.stringify(status).includes('mock-secret'));
+    assert.equal(await readConnection(e,'alice'),null);
+  }
+});
+test('verification distinguishes rejection, throttling, outage, and transport failure without leaking response bodies',async()=>{
+  for(const [code,expected,message] of [[401,403,/fresh token/],[403,403,/fresh token/],[429,429,/limiting verification/],[503,502,/temporarily unavailable/],[302,502,/temporarily unavailable/],['offline',502,/could not verify/]]){
+    const e=env();const f=fixture(()=>{if(code==='offline')throw Error('mock-secret-error');return response({privateDetail:'mock-secret-error'},code)});const worker=createWorker(f.fetch);const nonce=await sessionStart(worker,e);
+    const result=await worker.fetch(request('/api/session/complete',{method:'POST',data:{nonce,token:'mock-access-alice',consent:true}}),e);
+    const text=await result.text();assert.equal(result.status,expected);assert.match(text,message);assert.ok(!text.includes('mock-secret-error'));assert.ok(!text.includes('mock-access-alice'));
+    assert.equal(await readConnection(e,'alice'),null);assert.ok(f.calls.every(x=>x.options.method==='GET'));
+  }
+});
+test('expired token metadata fails before network and invalid form bodies fail safely',async()=>{
+  const e=env();const f=fixture();const worker=createWorker(f.fetch);const nonce=await sessionStart(worker,e);
+  for(const data of [null,[],7])assert.equal((await worker.fetch(request('/api/session/complete',{method:'POST',data}),e)).status,400);
+  const token='mock.'+Buffer.from(JSON.stringify({exp:Math.floor(Date.now()/1000)-1})).toString('base64url')+'.mock';
+  const result=await worker.fetch(request('/api/session/complete',{method:'POST',data:{nonce,token,consent:true}}),e);
+  assert.equal(result.status,401);assert.match(await result.text(),/expired/);assert.equal(f.calls.length,0);assert.equal(await readConnection(e,'alice'),null);
+});
+async function browserHarness(fetcher){
+  const html=await (await createWorker().fetch(request('/'),{})).text();
+  const lookup=html.match(/<code id="tokenLookup">([\s\S]*?)<\/code>/)[1];
+  const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
+  const elements=new Map();const element=()=>({hidden:false,textContent:'',value:'',checked:false,disabled:false,children:[],append(...children){this.children.push(...children)},replaceChildren(...children){this.children=[...children]},focus(){}});
+  const get=id=>{if(!elements.has(id))elements.set(id,element());return elements.get(id)};get('tokenLookup').textContent=lookup;
+  const timers=[];const copied=[];const requests=[];
+  const context=vm.createContext({document:{getElementById:get,createElement:element,createTextNode:text=>({text}),querySelectorAll:()=>[]},window:{addEventListener(){}},navigator:{clipboard:{writeText:async text=>copied.push(text)}},fetch:async(path,options)=>{requests.push({path,options});return fetcher(path,options)},setTimeout:fn=>{timers.push(fn);return timers.length},clearTimeout(){},Date,console});
+  vm.runInContext(script,context);const settle=()=>new Promise(resolve=>setImmediate(resolve));await settle();
+  return {get,context,timers,copied,requests,lookup,settle};
+}
+test('Safari copy button copies a complete command and never retrieves or submits a token',async()=>{
+  const h=await browserHarness(()=>response({configured:true,connected:false}));
+  await h.get('copyLookup').onclick();assert.equal(h.copied[0],h.lookup);
+  let reads=0;const lookupContext=vm.createContext({localStorage:{getItem:key=>{reads++;assert.equal(key,'D2L.Fetch.Tokens');return JSON.stringify({'*:*:*':{access_token:'mock-safari-token'}})}}});
+  assert.equal(vm.runInContext(h.copied[0],lookupContext),'mock-safari-token');assert.equal(reads,1);
+  assert.deepEqual(h.requests.map(x=>x.path),['/api/status']);assert.ok(!h.copied[0].includes('mock-safari-token'));
+});
+test('browser expiry hides course selection and clears secret entry without network or renewal',async()=>{
+  const h=await browserHarness(path=>response(path==='/api/status'?{configured:true,connected:true,mode:'session',expiresAt:Date.now()+60000,selectedCourseIds:[11]}:{courses:[{id:11,code:'MOCK',name:'Mock course'}]}));
+  assert.equal(h.get('coursePicker').hidden,false);assert.equal(h.get('courses').children.length,1);
+  h.get('token').value='mock-input-token';h.get('consent').checked=true;const count=h.requests.length;
+  h.timers[0]();assert.equal(h.get('coursePicker').hidden,true);assert.equal(h.get('courses').children.length,0);assert.equal(h.get('token').value,'');assert.equal(h.get('consent').checked,false);
+  assert.match(h.get('status').textContent,/expired/);assert.equal(h.requests.length,count);
+});
+test('browser hides stale courses on rejection and shows friendly transport or sign-in errors',async()=>{
+  for(const failure of ['rejected','network','html']){
+    const h=await browserHarness(path=>{if(path==='/api/status')return response({configured:true,connected:true,mode:'session',expiresAt:Date.now()+60000,selectedCourseIds:[11]});if(failure==='network')throw Error('mock-network-detail');if(failure==='html')return new Response('<html>Sign in</html>',{status:401});return response({error:'McGill rejected this temporary connection. Reverify on the private page.'},401)});
+    assert.equal(h.get('coursePicker').hidden,true);assert.equal(h.get('courses').children.length,0);assert.ok(!h.get('status').textContent.includes('mock-network-detail'));
+    assert.match(h.get('status').textContent,failure==='network'?/could not be reached/:failure==='html'?/Sign in to this private Site/:/Reverify/);
   }
 });

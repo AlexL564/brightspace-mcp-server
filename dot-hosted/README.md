@@ -58,8 +58,13 @@ The user manually supplies only an existing bearer token directly on that page.
 The agent must not inspect browser cookies, localStorage, request headers,
 clipboard or secret input. Do not capture the credential page during handoff.
 The page does not extract, mint or renew tokens, collect passwords/cookies,
-include analytics, or persist tokens in browser storage. Manual guidance is
-provided for a user who can inspect their own already signed-in browser. If no
+include analytics, or persist tokens in browser storage. Safari-specific manual guidance and a copy-command button are provided for a user
+who can inspect their own already signed-in browser. The command uses
+`String.fromCharCode(42,58,42,58,42)` for the literal wildcard key so copied
+asterisks cannot disappear; copying copies only the command, never a token.
+Connection errors hide stale course selections, expiration hides the picker, and
+the page offers a read-only status retry. Expiry and rejection explanations retain
+only a non-secret reason in the disconnected marker. If no
 usable token is available, stop and report that without revealing values.
 Token acquisition on McGill has not yet been verified. A signed-in browser view
 alone does not authenticate the MCP, and cloud-browser login state is not
