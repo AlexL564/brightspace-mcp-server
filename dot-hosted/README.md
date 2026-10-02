@@ -76,13 +76,17 @@ still be checked. It fails closed rather than silently broadening access.
 
 ## Secret configuration and consent
 
-Configure via Sites' secure secret input, after explicit action-time approval:
+Configure through a supported user-controlled secret-entry route, after explicit
+action-time approval. That handoff route has not been established in the current
+environment; the available Sites environment setter accepts values as tool
+arguments, so its existence alone does not resolve secure user entry:
 
 - `D2L_CLIENT_ID`: registered McGill application ID.
 - `D2L_CLIENT_SECRET`: registered application secret.
 - `CONNECTION_ENCRYPTION_KEY`: a new 32-byte random key encoded as 64 hex digits.
 
-Use `is_secret: true` for all three. Never put them in Git, a checked-in `.env`,
+The eventual Sites configuration must use `is_secret: true` for all three. Never
+put them in Git, a checked-in `.env`,
 shell arguments, chat, or browser session extraction. R2's logical binding
 `CONNECTIONS` is declared in `.openai/hosting.json`. Rotating the encryption key
 makes existing connections unreadable, so users must reconnect unless a separate
