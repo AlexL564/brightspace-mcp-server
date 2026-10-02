@@ -34,7 +34,12 @@ const STATS = {
   tokenRefreshes: 0,
 };
 
-function setup(appConfig: AppConfig, version = "9.8.7", stats: typeof STATS = STATS) {
+function setup(
+  appConfig: AppConfig,
+  version = "9.8.7",
+  stats: typeof STATS = STATS,
+  readSignedInIdentity?: () => Promise<{ uniqueName?: string; displayName?: string } | null>
+) {
   let name = "";
   let handler: (args: unknown) => Promise<any>;
   const server = {
@@ -44,7 +49,11 @@ function setup(appConfig: AppConfig, version = "9.8.7", stats: typeof STATS = ST
     },
   };
   const apiClient = { stats: () => stats };
-  registerGetServerInfo(server as any, appConfig, version, apiClient as any);
+  if (readSignedInIdentity) {
+    registerGetServerInfo(server as any, appConfig, version, apiClient as any, readSignedInIdentity);
+  } else {
+    registerGetServerInfo(server as any, appConfig, version, apiClient as any);
+  }
   return { name: () => name, call: () => handler!({}) };
 }
 
@@ -58,8 +67,20 @@ describe("get_server_info", () => {
 
   it("returns exactly the documented fields", async () => {
     expect(Object.keys(await payload(config())).sort()).toEqual(
-      ["arch", "configPath", "hasStoredCredential", "node", "platform", "requests", "schoolUrl", "sessionStatePath", "version"],
+      ["arch", "configPath", "hasStoredCredential", "localTimezone", "node", "platform", "requests", "schoolUrl", "sessionStatePath", "utcOffsetMinutes", "version"],
     );
+  });
+
+  it("reports the server's resolved local timezone", async () => {
+    expect((await payload(config())).localTimezone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
+  });
+
+  it("reports the UTC offset in minutes, the inverse of Date#getTimezoneOffset", async () => {
+    // On a UTC runner, getTimezoneOffset() is 0 and negating it produces -0;
+    // `|| 0` is the same normalization the source applies, since the
+    // response has already been through a JSON round trip (which itself
+    // turns -0 into 0) by the time it reaches this assertion.
+    expect((await payload(config())).utcOffsetMinutes).toBe(-new Date().getTimezoneOffset() || 0);
   });
 
   it("carries the client's request counters under requests", async () => {
@@ -148,5 +169,38 @@ describe("get_server_info microsoftSession", () => {
     await savedSession();
     const text = (await setup(config({ sessionDir: dir })).call()).content.map((c: any) => c.text).join("\n");
     expect(text).not.toContain("entra-cookie-secret");
+  });
+});
+
+/**
+ * signedInAs reports the non-secret uniqueName/displayName persisted
+ * alongside the session's encrypted token data. readSignedInIdentity is
+ * injected here so these tests never touch the native keyring that the real
+ * session store depends on — that encrypted round trip is covered by
+ * tests/auth/session-store.test.ts instead.
+ */
+describe("get_server_info signedInAs", () => {
+  it("reports signedInAs when the session carries both fields", async () => {
+    const { call } = setup(config(), "9.8.7", STATS, async () => ({ uniqueName: "jdoe", displayName: "Jane Doe" }));
+    expect(JSON.parse((await call()).content[0].text).signedInAs).toEqual({
+      uniqueName: "jdoe",
+      displayName: "Jane Doe",
+    });
+  });
+
+  it("reports only the field that is present", async () => {
+    const { call } = setup(config(), "9.8.7", STATS, async () => ({ displayName: "Jane Doe" }));
+    expect(JSON.parse((await call()).content[0].text).signedInAs).toEqual({ displayName: "Jane Doe" });
+  });
+
+  it("omits signedInAs entirely when there is no identity to report", async () => {
+    const { call } = setup(config(), "9.8.7", STATS, async () => null);
+    expect(JSON.parse((await call()).content[0].text)).not.toHaveProperty("signedInAs");
+  });
+
+  it("omits signedInAs by default against a session directory with nothing saved", async () => {
+    // No readSignedInIdentity override: falls through to the real (empty) session store.
+    expect(await payload(config({ sessionDir: path.join("/home/student", ".d2l-session", "accounts", "nonexistent") })))
+      .not.toHaveProperty("signedInAs");
   });
 });
