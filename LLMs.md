@@ -131,6 +131,7 @@ Registered in `src/tools/index.ts`, schemas in `src/tools/schemas.ts`:
 | `get_course_content` | Module tree and content topics |
 | `get_discussions` | Discussion forums and recent posts |
 | `get_roster` | Classlist for a course |
+| `get_my_groups` | The current user's project/discussion groups in a course, with each group's members |
 | `get_classlist_emails` | Emails of classmates and instructors |
 | `download_file` | Download a file attachment (PDF, slides, etc.) to disk — course content (`topicId`), a submission (`folderId` + `fileId`), or an announcement attachment (`newsId` + `fileId`) |
 | `get_assignment_files` | Read the files attached to an assignment (spec, rubric, starter workbook) and return their text |
@@ -138,7 +139,7 @@ Registered in `src/tools/index.ts`, schemas in `src/tools/schemas.ts`:
 | `get_video_transcript` | Transcript of a video embedded in course content (Kaltura, YouTube), with timestamps |
 | `get_server_info` | Running version, Node runtime, platform, config and session paths, school URL, whether a credential is stored, the server's local timezone and UTC offset (`localTimezone`, `utcOffsetMinutes`), `signedInAs` (`uniqueName`/`displayName`) once known, `microsoftSession` (what Microsoft remembered) once a browser sign-in is saved, and `requests` (lightweight API client counters) — no network call, no secrets |
 
-These sixteen are the whole surface. An available-update notice, when there is one, rides along as a second text block on the first successful result.
+These seventeen are the whole surface. An available-update notice, when there is one, rides along as a second text block on the first successful result.
 
 `get_server_info`'s `requests` field is `D2LApiClient.stats()`: `statusClasses` (counts for `2xx`/`401`/`403`/`404`/`429`/`5xx`, plus `other` for anything outside that list), `networkErrors`, `cacheHits`/`cacheMisses`, `coalescedJoins`, and `tokenRefreshes`. It is a snapshot of this process only (resets on restart), additive to the existing fields, and never carries a URL, username, or token. `coalescedJoins` comes from request coalescing in `D2LApiClient.get()`: a GET already in flight for the same unresolved path is joined instead of issuing a second fetch, which matters because Claude Desktop fans out tool calls in parallel and the tools themselves fan out per course. A TTL'd call that joins an in-flight request for the same path counts as both a cache miss (it wasn't served from the cache) and a coalesced join (it didn't issue its own fetch) -- the two counters overlap rather than partition the calls.
 
