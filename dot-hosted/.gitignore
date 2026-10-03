@@ -1,0 +1,4 @@
+dist/
+.env*
+.sites-runtime/
+*.tgz
