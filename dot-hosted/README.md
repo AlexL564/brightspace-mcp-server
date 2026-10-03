@@ -78,8 +78,13 @@ rejects cookie headers, refresh-token fields and other unsupported input. McGill
 on the baseline ETag, so a completed disconnect prevents delayed provisioning
 from recreating access. Reconnection starts with no selected courses.
 
-Session access is capped at one hour from submission, shortened by token expiry
-metadata when present. Unverified JWT metadata can only shorten this cap, never
+Session access uses a configurable ceiling from submission, shortened by token expiry
+metadata when present. `SESSION_MAX_AGE_SECONDS` defaults to 3600 and accepts
+3600–2419200 seconds (one hour to four weeks). The page displays the current
+ceiling before consent, and the submitted duration is bounded by both the
+user-bound intent and the current policy. Old clients that omit the duration
+keep a one-hour limit. Existing connections are never extended by a configuration
+change. Connection status exposes only expiry timestamps and which limit applies. Unverified JWT metadata can only shorten this cap, never
 extend it or authorize access. McGill rejection can end access sooner. Expired or
 rejected credentials are cleared on the next request; disconnect clears them
 immediately while retaining only an encrypted token-free invalidation marker.
@@ -170,7 +175,8 @@ or run its install scripts. Never register a replacement Site.
 After successful private publication, read this Site with
 `include_mcp_connection: true`, install its provisioned plugin in dot, and make
 a real `get_connection_status` tool call. That harmless call should report
-setup pending until secrets and OAuth are configured. After consent, validate
+storage setup pending until the encryption key is configured; institution OAuth
+is optional. Temporary token entry can connect without institution app credentials. After consent, validate
 selected-course reads and a denied unselected-course request. Deployment alone
 does not verify plugin installation or live McGill access. No schedule is
 created by this adapter.

@@ -291,10 +291,10 @@ async function browserHarness(fetcher){
   const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
   const elements=new Map();const element=()=>({hidden:false,textContent:'',value:'',checked:false,disabled:false,children:[],append(...children){this.children.push(...children)},replaceChildren(...children){this.children=[...children]},focus(){}});
   const get=id=>{if(!elements.has(id))elements.set(id,element());return elements.get(id)};get('tokenLookup').textContent=lookup;
-  const timers=[];const copied=[];const requests=[];
-  const context=vm.createContext({document:{getElementById:get,createElement:element,createTextNode:text=>({text}),querySelectorAll:()=>[]},window:{addEventListener(){}},navigator:{clipboard:{writeText:async text=>copied.push(text)}},fetch:async(path,options)=>{requests.push({path,options});return fetcher(path,options)},setTimeout:fn=>{timers.push(fn);return timers.length},clearTimeout(){},Date,console});
+  const timers=[];const timerDelays=[];const copied=[];const requests=[];let now=Date.now();class BrowserDate extends Date{static now(){return now}};
+  const context=vm.createContext({document:{getElementById:get,createElement:element,createTextNode:text=>({text}),querySelectorAll:()=>[]},window:{addEventListener(){}},navigator:{clipboard:{writeText:async text=>copied.push(text)}},fetch:async(path,options)=>{requests.push({path,options});return fetcher(path,options)},setTimeout:(fn,delay)=>{timers.push(fn);timerDelays.push(delay);return timers.length},clearTimeout(){},Date:BrowserDate,console});
   vm.runInContext(script,context);const settle=()=>new Promise(resolve=>setImmediate(resolve));await settle();
-  return {get,context,timers,copied,requests,lookup,settle};
+  return {get,context,timers,timerDelays,copied,requests,lookup,settle,advanceBy:ms=>{now+=ms}};
 }
 test('Safari copy button copies a complete command and never retrieves or submits a token',async()=>{
   const h=await browserHarness(()=>response({configured:true,connected:false}));
@@ -307,7 +307,7 @@ test('browser expiry hides course selection and clears secret entry without netw
   const h=await browserHarness(path=>response(path==='/api/status'?{configured:true,connected:true,mode:'session',expiresAt:Date.now()+60000,selectedCourseIds:[11]}:{courses:[{id:11,code:'MOCK',name:'Mock course'}]}));
   assert.equal(h.get('coursePicker').hidden,false);assert.equal(h.get('courses').children.length,1);
   h.get('token').value='mock-input-token';h.get('consent').checked=true;const count=h.requests.length;
-  h.timers[0]();assert.equal(h.get('coursePicker').hidden,true);assert.equal(h.get('courses').children.length,0);assert.equal(h.get('token').value,'');assert.equal(h.get('consent').checked,false);
+  h.advanceBy(60001);h.timers[0]();assert.equal(h.get('coursePicker').hidden,true);assert.equal(h.get('courses').children.length,0);assert.equal(h.get('token').value,'');assert.equal(h.get('consent').checked,false);
   assert.match(h.get('status').textContent,/expired/);assert.equal(h.requests.length,count);
 });
 test('browser hides stale courses on rejection and shows friendly transport or sign-in errors',async()=>{
@@ -316,4 +316,53 @@ test('browser hides stale courses on rejection and shows friendly transport or s
     assert.equal(h.get('coursePicker').hidden,true);assert.equal(h.get('courses').children.length,0);assert.ok(!h.get('status').textContent.includes('mock-network-detail'));
     assert.match(h.get('status').textContent,failure==='network'?/could not be reached/:failure==='html'?/Sign in to this private Site/:/Reverify/);
   }
+});
+
+test('new explicit consent can use four weeks while legacy clients retain one hour',async()=>{
+  for(const explicit of [true,false]){
+    const e=env();e.SESSION_MAX_AGE_SECONDS=String(28*86400);const worker=createWorker(fixture().fetch);const nonce=await sessionStart(worker,e);const before=Date.now();
+    const result=await worker.fetch(request('/api/session/complete',{method:'POST',data:{nonce,token:'mock-token',consent:true,...(explicit?{maxAgeSeconds:28*86400}:{})}}),e);
+    assert.equal(result.status,200);const saved=await readConnection(e,'alice');const intended=(explicit?28*86400:3600)*1000;
+    assert.ok(saved.value.expiresAt>=before+intended);assert.ok(saved.value.expiresAt<=Date.now()+intended);assert.equal(saved.value.tokenExpiresAt,null);
+    const status=await (await worker.fetch(request('/api/status'),e)).json();assert.equal(status.sessionMaxAgeSeconds,28*86400);assert.equal(status.expirySource,'reader_limit');
+  }
+});
+test('long reader policy cannot extend token expiry and exposes only non-secret expiry metadata',async()=>{
+  const e=env();e.SESSION_MAX_AGE_SECONDS=String(28*86400);const worker=createWorker(fixture().fetch);const nonce=await sessionStart(worker,e);
+  const exp=Math.floor(Date.now()/1000)+3600;const token='mock.'+Buffer.from(JSON.stringify({exp})).toString('base64url')+'.mock';
+  assert.equal((await worker.fetch(request('/api/session/complete',{method:'POST',data:{nonce,token,consent:true,maxAgeSeconds:28*86400}}),e)).status,200);
+  const status=await (await worker.fetch(request('/api/status'),e)).json();assert.equal(status.expiresAt,exp*1000);assert.equal(status.tokenExpiresAt,exp*1000);assert.equal(status.expirySource,'token_metadata');
+  assert.ok(status.readerExpiresAt>status.tokenExpiresAt);assert.ok(!JSON.stringify(status).includes(token));
+});
+test('duration consent is bounded by the original intent and current policy',async()=>{
+  for(const starting of [3600,28*86400]){
+    const e=env();e.SESSION_MAX_AGE_SECONDS=String(starting);const f=fixture();const worker=createWorker(f.fetch);const nonce=await sessionStart(worker,e);e.SESSION_MAX_AGE_SECONDS=String(starting===3600?28*86400:3600);
+    const result=await worker.fetch(request('/api/session/complete',{method:'POST',data:{nonce,token:'mock-token',consent:true,maxAgeSeconds:28*86400}}),e);
+    assert.equal(result.status,400);assert.equal(f.calls.length,0);assert.equal(await readConnection(e,'alice'),null);
+  }
+});
+test('out-of-range policies fall back to one hour and invalid consent durations fail before network',async()=>{
+  const e=env();const f=fixture();const worker=createWorker(f.fetch);
+  for(const policy of ['Infinity','0','2419201','garbage','3600.5']){e.SESSION_MAX_AGE_SECONDS=policy;assert.equal((await (await worker.fetch(request('/api/status'),e)).json()).sessionMaxAgeSeconds,3600);}
+  e.SESSION_MAX_AGE_SECONDS=String(28*86400);const nonce=await sessionStart(worker,e);
+  for(const maxAgeSeconds of [0,-1,3600.5,28*86400+1,'86400',null])assert.equal((await worker.fetch(request('/api/session/complete',{method:'POST',data:{nonce,token:'mock-token',consent:true,maxAgeSeconds}}),e)).status,400);
+  assert.equal(f.calls.length,0);
+});
+test('raising policy does not extend an existing one-hour connection',async()=>{
+  const e=env();const worker=createWorker(fixture().fetch);const nonce=await sessionStart(worker,e);
+  assert.equal((await worker.fetch(request('/api/session/complete',{method:'POST',data:{nonce,token:'mock-token',consent:true}}),e)).status,200);
+  const prior=(await readConnection(e,'alice')).value.expiresAt;e.SESSION_MAX_AGE_SECONDS=String(28*86400);
+  assert.equal((await (await worker.fetch(request('/api/status'),e)).json()).expiresAt,prior);
+});
+test('four-week browser timer uses bounded chunks and submits exactly the displayed consent duration',async()=>{
+  const duration=28*86400;const h=await browserHarness((path,options)=>{
+    if(path==='/api/status')return response({configured:true,connected:true,mode:'session',sessionMaxAgeSeconds:duration,expiresAt:Date.now()+duration*1000,selectedCourseIds:[]});
+    if(path==='/api/session/start')return response({nonce:'mock-nonce',sessionMaxAgeSeconds:duration});
+    if(path==='/api/session/complete'){const submitted=JSON.parse(options.body);assert.equal(submitted.maxAgeSeconds,duration);assert.equal(submitted.consent,true);return response({connected:true})}
+    return response({courses:[]});
+  });
+  assert.equal(h.get('durationLimit').textContent,'28 days');assert.equal(h.timerDelays[0],2147483647);
+  h.advanceBy(2147483647);h.timers[0]();assert.ok(h.timerDelays[1]>0&&h.timerDelays[1]<=2147483647);assert.equal(h.get('coursePicker').hidden,false);
+  await h.get('begin').onclick();h.get('token').value='mock-token';h.get('consent').checked=true;await h.get('submit').onclick();
+  assert.ok(h.requests.some(x=>x.path==='/api/session/complete'));assert.equal(h.get('token').value,'');
 });
